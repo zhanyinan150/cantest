@@ -41,7 +41,7 @@
 #define CAN_DEMO_NODE_ID              0U
 #define CAN_DEMO_BASE_STD_ID          0x100U
 #define CAN_DEMO_MAX_NODE_ID          126U
-#define CAN_DEMO_TX_PERIOD_MS         600U
+#define CAN_DEMO_TX_PERIOD_MS         700U
 #define CAN_DEMO_POLL_PERIOD_MS       10U
 #define CAN_DEMO_START_OFFSET_STEP_MS 10U
 #define CAN_DEMO_PAYLOAD_MAGIC        0xA5U
