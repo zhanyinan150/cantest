@@ -41,7 +41,7 @@
 #define CAN_DEMO_NODE_ID              0U
 #define CAN_DEMO_BASE_STD_ID          0x100U
 #define CAN_DEMO_MAX_NODE_ID          126U
-#define CAN_DEMO_TX_PERIOD_MS         100U
+#define CAN_DEMO_TX_PERIOD_MS         600U
 #define CAN_DEMO_POLL_PERIOD_MS       10U
 #define CAN_DEMO_START_OFFSET_STEP_MS 10U
 #define CAN_DEMO_PAYLOAD_MAGIC        0xA5U
@@ -424,19 +424,7 @@ void StartDefaultTask(void *argument)
 
         if (status == HAL_OK)
         {
-          printf("[CAN TX] id=0x%03lX seq=%lu free=%lu\r\n",
-                 (unsigned long)(CAN_DEMO_BASE_STD_ID + node_id),
-                 (unsigned long)sequence,
-                 (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan1));
           sequence++;
-        }
-        else
-        {
-          printf("[CAN TX] failed, status=%ld state=%lu err=0x%08lX free=%lu\r\n",
-                 (long)status,
-                 (unsigned long)HAL_CAN_GetState(&hcan1),
-                 (unsigned long)HAL_CAN_GetError(&hcan1),
-                 (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan1));
         }
 
         next_tx_tick += CAN_DEMO_TX_PERIOD_MS;
@@ -546,7 +534,29 @@ static HAL_StatusTypeDef CAN_DemoSend(uint8_t node_id, uint32_t sequence)
     osDelay(1);
   }
 
-  return HAL_CAN_AddTxMessage(&hcan1, &tx_header, tx_data, &tx_mailbox);
+  HAL_StatusTypeDef result = HAL_CAN_AddTxMessage(&hcan1, &tx_header, tx_data, &tx_mailbox);
+
+  if (result == HAL_OK)
+  {
+    printf("[CAN TX] std_id=0x%03lX rtr=DATA dlc=%lu seq=%lu data=",
+           (unsigned long)(CAN_DEMO_BASE_STD_ID + node_id),
+           (unsigned long)sizeof(tx_data),
+           (unsigned long)sequence);
+    CAN_DemoPrintData(tx_data, sizeof(tx_data));
+    printf(" free=%lu\r\n",
+           (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan1));
+  }
+  else
+  {
+    printf("[CAN TX] failed, status=%ld state=%lu err=0x%08lX data=",
+           (long)result,
+           (unsigned long)HAL_CAN_GetState(&hcan1),
+           (unsigned long)HAL_CAN_GetError(&hcan1));
+    CAN_DemoPrintData(tx_data, sizeof(tx_data));
+    printf("\r\n");
+  }
+
+  return result;
 }
 
 static void CAN_DemoDrainRx(void)
