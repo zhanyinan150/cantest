@@ -99,6 +99,7 @@ void App_Init(void)
    * 需在 Emm_V5_CAN_Init 与 CAN2 启动之后调用。底盘命令经 VOFA 下发:
    *   fwd <rpm> = 前进, rev <rpm> = 后退, cstop = 缓停。 */
   Chassis_Init();
+  printf("[app] DBG1 after Chassis_Init\r\n"); fflush(stdout);
 
   /* 升降控制任务已在 Lift_Init() 内创建 */
   /* 创建升降上升/下降测试任务: 调用 Lift_Up/Down 验证 M2006 升降系统 */
@@ -108,13 +109,16 @@ void App_Init(void)
     .priority = (osPriority_t)LIFT_TEST_TASK_PRIORITY,
   };
   osThreadNew(LiftTestTask, NULL, &liftTestTask_attributes);
+  printf("[app] DBG2 after LiftTestTask created, free heap=%u\r\n", (unsigned)xPortGetFreeHeapSize());
 
   /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
    * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
    * 回调分发逻辑位于 bsp/uart/uart_callback.c, 此处注册业务串口并启动接收。
    * UART5(步进电机DMA反馈)由 Emm_V5 注册, 实现 BSP↔Modules 解耦。 */
   UART_Callback_Register(UART5, Emm_V5_UART_RxCpltCallback);
+  printf("[app] DBG3 after UART_Callback_Register\r\n");
   UART_Callback_Init();
+  printf("[app] DBG4 after UART_Callback_Init\r\n");
 
   /* 创建命令消费任务: 阻塞等待 UART 命令队列, 分发到各模块。
    * 优先级 BelowNormal(16), 低频人工输入, 不干扰控制任务。 */
@@ -124,6 +128,7 @@ void App_Init(void)
     .priority = (osPriority_t)VOFA_TASK_PRIORITY,
   };
   osThreadNew(CommandTask, NULL, &cmdTask_attributes);
+  printf("[app] DBG5 after CommandTask created\r\n");
 
   /* 创建波形监控任务: 周期输出 JustFloat 波形 (第4步独立为可注册通道的 TelemetryTask) */
   const osThreadAttr_t teleTask_attributes = {
@@ -132,6 +137,7 @@ void App_Init(void)
     .priority = (osPriority_t)VOFA_TASK_PRIORITY,
   };
   osThreadNew(TelemetryTask, NULL, &teleTask_attributes);
+  printf("[app] DBG6 App_Init done, free heap=%u\r\n", (unsigned)xPortGetFreeHeapSize());
 }
 
 /* ===== VOFA+ 通信概览 =====
