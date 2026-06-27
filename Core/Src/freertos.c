@@ -78,6 +78,7 @@ static void CAN_DemoPrintStartup(uint8_t node_id);
 
 void StartDefaultTask(void *argument);
 
+extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
 
 /**
@@ -129,6 +130,8 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
   uint8_t node_id = CAN_DemoGetNodeId();
   uint32_t sequence = 0U;
@@ -142,11 +145,11 @@ void StartDefaultTask(void *argument)
   printf("[DIAG] === LOOPBACK TEST (internal, no transceiver needed) ===\r\n");
   {
     /* Temporarily re-init CAN in loopback mode */
-    hcan1.Init.Mode = CAN_MODE_LOOPBACK;
-    HAL_StatusTypeDef lb_init = HAL_CAN_Init(&hcan1);
+    hcan2.Init.Mode = CAN_MODE_LOOPBACK;
+    HAL_StatusTypeDef lb_init = HAL_CAN_Init(&hcan2);
     printf("[DIAG] Loopback HAL_CAN_Init status=%ld\r\n", (long)lb_init);
     printf("[DIAG] Loopback MCR=0x%08lX MSR=0x%08lX\r\n",
-           (unsigned long)CAN1->MCR, (unsigned long)CAN1->MSR);
+           (unsigned long)CAN2->MCR, (unsigned long)CAN2->MSR);
 
     if (lb_init == HAL_OK)
     {
@@ -160,11 +163,11 @@ void StartDefaultTask(void *argument)
         printf("[DIAG] Loopback filter FAILED\r\n");
       }
 
-      HAL_StatusTypeDef lb_start = HAL_CAN_Start(&hcan1);
+      HAL_StatusTypeDef lb_start = HAL_CAN_Start(&hcan2);
       printf("[DIAG] Loopback HAL_CAN_Start status=%ld state=%lu\r\n",
-             (long)lb_start, (unsigned long)HAL_CAN_GetState(&hcan1));
+             (long)lb_start, (unsigned long)HAL_CAN_GetState(&hcan2));
       printf("[DIAG] Loopback MCR=0x%08lX MSR=0x%08lX ESR=0x%08lX\r\n",
-             (unsigned long)CAN1->MCR, (unsigned long)CAN1->MSR, (unsigned long)CAN1->ESR);
+             (unsigned long)CAN2->MCR, (unsigned long)CAN2->MSR, (unsigned long)CAN2->ESR);
 
       if (lb_start == HAL_OK)
       {
@@ -177,20 +180,20 @@ void StartDefaultTask(void *argument)
         tx_hdr.RTR = CAN_RTR_DATA;
         tx_hdr.DLC = 8;
 
-        HAL_StatusTypeDef tx_status = HAL_CAN_AddTxMessage(&hcan1, &tx_hdr, tx_data, &tx_mailbox);
+        HAL_StatusTypeDef tx_status = HAL_CAN_AddTxMessage(&hcan2, &tx_hdr, tx_data, &tx_mailbox);
         printf("[DIAG] Loopback TX status=%ld mailbox=%lu\r\n", (long)tx_status, (unsigned long)tx_mailbox);
 
         /* Wait a bit for loopback RX */
         osDelay(50);
 
-        uint32_t fifo_fill = HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0);
+        uint32_t fifo_fill = HAL_CAN_GetRxFifoFillLevel(&hcan2, CAN_RX_FIFO0);
         printf("[DIAG] Loopback RX FIFO0 fill=%lu\r\n", (unsigned long)fifo_fill);
 
         if (fifo_fill > 0U)
         {
           CAN_RxHeaderTypeDef rx_hdr;
           uint8_t rx_data[8] = {0};
-          if (HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &rx_hdr, rx_data) == HAL_OK)
+          if (HAL_CAN_GetRxMessage(&hcan2, CAN_RX_FIFO0, &rx_hdr, rx_data) == HAL_OK)
           {
             printf("[DIAG] Loopback RX OK! id=0x%03lX dlc=%lu data=",
                    (unsigned long)rx_hdr.StdId, (unsigned long)rx_hdr.DLC);
@@ -209,17 +212,17 @@ void StartDefaultTask(void *argument)
           printf("[DIAG] This means CAN controller itself is broken or misconfigured\r\n");
         }
 
-        HAL_CAN_Stop(&hcan1);
+        HAL_CAN_Stop(&hcan2);
       }
       else
       {
         printf("[DIAG] *** LOOPBACK START FAILED - CAN controller cannot leave init mode ***\r\n");
         printf("[DIAG] MSR INAK bit = %lu (should be 0 after start)\r\n",
-               (unsigned long)((CAN1->MSR & CAN_MSR_INAK) >> 0));
+               (unsigned long)((CAN2->MSR & CAN_MSR_INAK) >> 0));
         printf("[DIAG] This is a CRITICAL hardware issue:\r\n");
-        printf("[DIAG]   - Check PD0/PD1 are not shorted to ground or VCC\r\n");
-        printf("[DIAG]   - Check no other peripheral is claiming PA11/PA12\r\n");
-        printf("[DIAG]   - Check AF mapping: PD0=AF9(CAN1_RX), PD1=AF9(CAN1_TX)\r\n");
+        printf("[DIAG]   - Check PB12/PB13 are not shorted to ground or VCC\r\n");
+        printf("[DIAG]   - Check no other peripheral is claiming PB12/PB13\r\n");
+        printf("[DIAG]   - Check AF mapping: PB12=AF9(CAN2_RX), PB13=AF9(CAN2_TX)\r\n");
       }
     }
     else
@@ -228,29 +231,29 @@ void StartDefaultTask(void *argument)
     }
 
     /* Stop loopback, restore normal mode */
-    HAL_CAN_Stop(&hcan1);
-    hcan1.Init.Mode = CAN_MODE_NORMAL;
+    HAL_CAN_Stop(&hcan2);
+    hcan2.Init.Mode = CAN_MODE_NORMAL;
   }
   printf("[DIAG] === LOOPBACK TEST END ===\r\n\r\n");
 
   /* ---- Step 2: Detailed CAN register dump before normal init ---- */
-  printf("[DIAG] CAN1 registers BEFORE normal init:\r\n");
+  printf("[DIAG] CAN2 registers BEFORE normal init:\r\n");
   printf("[DIAG]   MCR=0x%08lX MSR=0x%08lX TSR=0x%08lX\r\n",
-         (unsigned long)CAN1->MCR,
-         (unsigned long)CAN1->MSR,
-         (unsigned long)CAN1->TSR);
+         (unsigned long)CAN2->MCR,
+         (unsigned long)CAN2->MSR,
+         (unsigned long)CAN2->TSR);
   printf("[DIAG]   ESR=0x%08lX BTR=0x%08lX IER=0x%08lX\r\n",
-         (unsigned long)CAN1->ESR,
-         (unsigned long)CAN1->BTR,
-         (unsigned long)CAN1->IER);
-  printf("[DIAG]   RF0R=0x%08lX RF1R=0x%08lX FMR=0x%08lX\r\n",
-         (unsigned long)CAN1->RF0R,
-         (unsigned long)CAN1->RF1R,
+         (unsigned long)CAN2->ESR,
+         (unsigned long)CAN2->BTR,
+         (unsigned long)CAN2->IER);
+  printf("[DIAG]   RF0R=0x%08lX RF1R=0x%08lX CAN1_FMR=0x%08lX\r\n",
+         (unsigned long)CAN2->RF0R,
+         (unsigned long)CAN2->RF1R,
          (unsigned long)CAN1->FMR);
 
   /* ---- Baudrate verification ---- */
   {
-    uint32_t btr = CAN1->BTR;
+    uint32_t btr = CAN2->BTR;
     uint32_t prescaler = (btr & CAN_BTR_BRP) >> 0;
     uint32_t ts1 = (btr & CAN_BTR_TS1) >> 16;
     uint32_t ts2 = (btr & CAN_BTR_TS2) >> 20;
@@ -269,14 +272,14 @@ void StartDefaultTask(void *argument)
 
   /* ---- Step 3: Re-init CAN in NORMAL mode ---- */
   printf("[CAN INIT] Re-initializing CAN in NORMAL mode...\r\n");
-  HAL_StatusTypeDef reinit_status = HAL_CAN_Init(&hcan1);
+  HAL_StatusTypeDef reinit_status = HAL_CAN_Init(&hcan2);
   printf("[CAN INIT] HAL_CAN_Init status=%ld\r\n", (long)reinit_status);
   printf("[CAN INIT] After init: MCR=0x%08lX MSR=0x%08lX\r\n",
-         (unsigned long)CAN1->MCR, (unsigned long)CAN1->MSR);
+         (unsigned long)CAN2->MCR, (unsigned long)CAN2->MSR);
 
   /* Check INAK status after init */
   {
-    uint32_t inak = (CAN1->MSR & CAN_MSR_INAK);
+    uint32_t inak = (CAN2->MSR & CAN_MSR_INAK);
     printf("[DIAG] MSR INAK=%lu (1=still in init mode, 0=left init mode)\r\n", (unsigned long)inak);
     if (inak != 0U)
     {
@@ -286,54 +289,55 @@ void StartDefaultTask(void *argument)
       printf("[DIAG]   1) CAN transceiver not powered or not connected\r\n");
       printf("[DIAG]   2) CANH/CANL shorted or swapped\r\n");
       printf("[DIAG]   3) No 120ohm termination on bus\r\n");
-      printf("[DIAG]   4) PD0/PD1 GPIO conflict with another peripheral\r\n");
+      printf("[DIAG]   4) PB12/PB13 GPIO conflict with another peripheral\r\n");
     }
   }
 
   /* ---- Step 4: GPIO pin check ---- */
-  printf("[DIAG] GPIO pin levels (PD0=CAN1_RX, PD1=CAN1_TX):\r\n");
-  printf("[DIAG]   PA11=%u PA12=%u\r\n",
-         (unsigned int)HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_0),
-         (unsigned int)HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1));
+  printf("[DIAG] GPIO pin levels (PB12=CAN2_RX, PB13=CAN2_TX):\r\n");
+  printf("[DIAG]   PB12=%u PB13=%u\r\n",
+         (unsigned int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12),
+         (unsigned int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13));
   printf("[DIAG]   (CAN_RX idle should be HIGH=1, LOW=0 means no transceiver or bus stuck dominant)\r\n");
 
   /* ---- Step 5: Filter config ---- */
   printf("[CAN INIT] attempting filter config...\r\n");
   if (CAN_DemoConfigFilter() != HAL_OK)
   {
-    printf("[CAN INIT] filter failed, err=0x%08lX\r\n", (unsigned long)HAL_CAN_GetError(&hcan1));
+    printf("[CAN INIT] filter failed, err=0x%08lX\r\n", (unsigned long)HAL_CAN_GetError(&hcan2));
   }
   else
   {
     printf("[CAN INIT] filter configured OK\r\n");
 
     /* Dump filter registers after config */
-    printf("[DIAG] Filter regs: FMR=0x%08lX FM1R=0x%08lX FS1R=0x%08lX\r\n",
+    /* RM0090 32.9: filter registers accessible via CAN1 only */
+    printf("[DIAG] Filter regs via CAN1: FMR=0x%08lX FM1R=0x%08lX FS1R=0x%08lX\r\n",
            (unsigned long)CAN1->FMR,
            (unsigned long)CAN1->FM1R,
            (unsigned long)CAN1->FS1R);
-    printf("[DIAG] Filter regs: FFA1R=0x%08lX FA1R=0x%08lX\r\n",
+    printf("[DIAG] Filter regs via CAN1: FFA1R=0x%08lX FA1R=0x%08lX\r\n",
            (unsigned long)CAN1->FFA1R,
            (unsigned long)CAN1->FA1R);
-    printf("[DIAG] Filter0: FR1=0x%08lX FR2=0x%08lX\r\n",
-           (unsigned long)CAN1->sFilterRegister[0].FR1,
-           (unsigned long)CAN1->sFilterRegister[0].FR2);
+    printf("[DIAG] CAN2 bank0 (FMR bank14): FR1=0x%08lX FR2=0x%08lX\r\n",
+           (unsigned long)CAN1->sFilterRegister[14].FR1,
+           (unsigned long)CAN1->sFilterRegister[14].FR2);
 
     printf("[CAN INIT] attempting HAL_CAN_Start...\r\n");
 
-    HAL_StatusTypeDef start_status = HAL_CAN_Start(&hcan1);
+    HAL_StatusTypeDef start_status = HAL_CAN_Start(&hcan2);
     if (start_status != HAL_OK)
     {
-      uint32_t error_code = HAL_CAN_GetError(&hcan1);
+      uint32_t error_code = HAL_CAN_GetError(&hcan2);
       printf("[CAN INIT] start failed, status=%ld state=%lu err=0x%08lX\r\n",
              (long)start_status,
-             (unsigned long)HAL_CAN_GetState(&hcan1),
+             (unsigned long)HAL_CAN_GetState(&hcan2),
              (unsigned long)error_code);
 
       printf("[DIAG] MSR=0x%08lX INAK=%lu SLAK=%lu\r\n",
-             (unsigned long)CAN1->MSR,
-             (unsigned long)(CAN1->MSR & CAN_MSR_INAK),
-             (unsigned long)((CAN1->MSR & CAN_MSR_SLAK) >> 2));
+             (unsigned long)CAN2->MSR,
+             (unsigned long)(CAN2->MSR & CAN_MSR_INAK),
+             (unsigned long)((CAN2->MSR & CAN_MSR_SLAK) >> 2));
 
       if (error_code & HAL_CAN_ERROR_ACK)
         printf("[CAN DIAG] ACK error - no other node responding\r\n");
@@ -355,22 +359,22 @@ void StartDefaultTask(void *argument)
   }
 
   /* ---- Post-start register dump ---- */
-  printf("[DIAG] CAN1 registers AFTER start:\r\n");
+  printf("[DIAG] CAN2 registers AFTER start:\r\n");
   printf("[DIAG]   MCR=0x%08lX MSR=0x%08lX TSR=0x%08lX\r\n",
-         (unsigned long)CAN1->MCR,
-         (unsigned long)CAN1->MSR,
-         (unsigned long)CAN1->TSR);
+         (unsigned long)CAN2->MCR,
+         (unsigned long)CAN2->MSR,
+         (unsigned long)CAN2->TSR);
   printf("[DIAG]   ESR=0x%08lX BTR=0x%08lX IER=0x%08lX\r\n",
-         (unsigned long)CAN1->ESR,
-         (unsigned long)CAN1->BTR,
-         (unsigned long)CAN1->IER);
+         (unsigned long)CAN2->ESR,
+         (unsigned long)CAN2->BTR,
+         (unsigned long)CAN2->IER);
   printf("[DIAG]   RF0R=0x%08lX RF1R=0x%08lX\r\n",
-         (unsigned long)CAN1->RF0R,
-         (unsigned long)CAN1->RF1R);
+         (unsigned long)CAN2->RF0R,
+         (unsigned long)CAN2->RF1R);
 
   /* Decode ESR */
   {
-    uint32_t esr = CAN1->ESR;
+    uint32_t esr = CAN2->ESR;
     printf("[DIAG] ESR detail: REC=%lu TEC=%lu LEC=%lu\r\n",
            (unsigned long)((esr & CAN_ESR_REC) >> 24),
            (unsigned long)((esr & CAN_ESR_TEC) >> 16),
@@ -392,7 +396,7 @@ void StartDefaultTask(void *argument)
     osDelay(3000);
 
     printf("[CAN INIT] retry: attempting HAL_CAN_Start...\r\n");
-    HAL_StatusTypeDef retry_status = HAL_CAN_Start(&hcan1);
+    HAL_StatusTypeDef retry_status = HAL_CAN_Start(&hcan2);
     if (retry_status == HAL_OK)
     {
       can_ready = 1U;
@@ -403,8 +407,8 @@ void StartDefaultTask(void *argument)
     {
       printf("[CAN INIT] retry failed, status=%ld state=%lu err=0x%08lX\r\n",
              (long)retry_status,
-             (unsigned long)HAL_CAN_GetState(&hcan1),
-             (unsigned long)HAL_CAN_GetError(&hcan1));
+             (unsigned long)HAL_CAN_GetState(&hcan2),
+             (unsigned long)HAL_CAN_GetError(&hcan2));
     }
   }
 
@@ -435,22 +439,22 @@ void StartDefaultTask(void *argument)
       if (diag_counter >= 500U)
       {
         diag_counter = 0U;
-        uint32_t esr = CAN1->ESR;
+        uint32_t esr = CAN2->ESR;
         printf("[DIAG] --- Periodic ---\r\n");
         printf("[DIAG] State=%lu ESR=0x%08lX REC=%lu TEC=%lu LEC=%lu\r\n",
-               (unsigned long)HAL_CAN_GetState(&hcan1),
+               (unsigned long)HAL_CAN_GetState(&hcan2),
                (unsigned long)esr,
                (unsigned long)((esr & CAN_ESR_REC) >> 24),
                (unsigned long)((esr & CAN_ESR_TEC) >> 16),
                (unsigned long)((esr & CAN_ESR_LEC) >> 4));
         printf("[DIAG] TSR=0x%08lX RF0R=0x%08lX FIFO0_fill=%lu free_tx=%lu\r\n",
-               (unsigned long)CAN1->TSR,
-               (unsigned long)CAN1->RF0R,
-               (unsigned long)HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0),
-               (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan1));
-        printf("[DIAG] PD0(RX)=%u PD1(TX)=%u\r\n",
-               (unsigned int)HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_0),
-               (unsigned int)HAL_GPIO_ReadPin(GPIOD, GPIO_PIN_1));
+               (unsigned long)CAN2->TSR,
+               (unsigned long)CAN2->RF0R,
+               (unsigned long)HAL_CAN_GetRxFifoFillLevel(&hcan2, CAN_RX_FIFO0),
+               (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan2));
+        printf("[DIAG] PB12(RX)=%u PB13(TX)=%u\r\n",
+               (unsigned int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_12),
+               (unsigned int)HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_13));
       }
     }
 
@@ -461,17 +465,7 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-int fputc(int ch, FILE *f)
-{
-  (void)f;
-  HAL_UART_Transmit(&huart1, (uint8_t *)&ch, 1U, HAL_MAX_DELAY);
-  return ch;
-}
-
-int __io_putchar(int ch)
-{
-  return fputc(ch, stdout);
-}
+/* printf 重定向已移至 bsp/printf/bsp_printf.c (fputc), 避免与该处重复定义 */
 
 static uint8_t CAN_DemoGetNodeId(void)
 {
@@ -490,7 +484,7 @@ static HAL_StatusTypeDef CAN_DemoConfigFilter(void)
 {
   CAN_FilterTypeDef filter_config = {0};
 
-  filter_config.FilterBank = 0;
+  filter_config.FilterBank = 14;
   filter_config.FilterMode = CAN_FILTERMODE_IDMASK;
   filter_config.FilterScale = CAN_FILTERSCALE_32BIT;
   filter_config.FilterIdHigh = 0x0000;
@@ -502,6 +496,8 @@ static HAL_StatusTypeDef CAN_DemoConfigFilter(void)
   filter_config.SlaveStartFilterBank = 14;
 
   printf("[CAN FILTER] mode=32BIT mask=0x0000 (accept all)\r\n");
+  /* RM0090 32.9: ALL filter registers are "available in CAN1 only" */
+  /* CAN2 filter MUST be configured through CAN1's register window */
   return HAL_CAN_ConfigFilter(&hcan1, &filter_config);
 }
 
@@ -528,9 +524,9 @@ static HAL_StatusTypeDef CAN_DemoSend(uint8_t node_id, uint32_t sequence)
   tx_header.DLC = sizeof(tx_data);
   tx_header.TransmitGlobalTime = DISABLE;
 
-  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan1) == 0U)
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan2) == 0U)
   {
-    HAL_CAN_AbortTxRequest(&hcan1, CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
+    HAL_CAN_AbortTxRequest(&hcan2, CAN_TX_MAILBOX0 | CAN_TX_MAILBOX1 | CAN_TX_MAILBOX2);
     osDelay(1);
   }
 
@@ -563,14 +559,14 @@ static void CAN_DemoDrainRx(void)
 {
   uint32_t frames_read = 0U;
 
-  while ((HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0) > 0U) && (frames_read < 16U))
+  while ((HAL_CAN_GetRxFifoFillLevel(&hcan2, CAN_RX_FIFO0) > 0U) && (frames_read < 16U))
   {
     CAN_RxHeaderTypeDef rx_header;
     uint8_t rx_data[8] = {0};
 
-    if (HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK)
+    if (HAL_CAN_GetRxMessage(&hcan2, CAN_RX_FIFO0, &rx_header, rx_data) != HAL_OK)
     {
-      printf("[CAN RX] read failed, err=0x%08lX\r\n", (unsigned long)HAL_CAN_GetError(&hcan1));
+      printf("[CAN RX] read failed, err=0x%08lX\r\n", (unsigned long)HAL_CAN_GetError(&hcan2));
       break;
     }
 
@@ -645,7 +641,7 @@ static void CAN_DemoPrintStartup(uint8_t node_id)
          (unsigned long)HAL_GetUIDw0(),
          (unsigned int)node_id,
          (unsigned long)(CAN_DEMO_BASE_STD_ID + node_id));
-  printf("[BOOT] USART1=115200  CAN1=1Mbps  TX_PERIOD=%lums\r\n",
+  printf("[BOOT] USART1=115200  CAN2=1Mbps  TX_PERIOD=%lums\r\n",
          (unsigned long)CAN_DEMO_TX_PERIOD_MS);
 }
 

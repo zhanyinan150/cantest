@@ -1,0 +1,21 @@
+# Keil MDK 编译产物
+MDK-ARM/cantest/*.o
+MDK-ARM/cantest/*.crf
+MDK-ARM/cantest/*.d
+MDK-ARM/cantest/*.axf
+MDK-ARM/cantest/*.hex
+MDK-ARM/cantest/*.htm
+MDK-ARM/cantest/*.map
+MDK-ARM/cantest/*.dep
+MDK-ARM/cantest/*.lnp
+MDK-ARM/cantest/*.lst
+MDK-ARM/cantest/*.sct
+MDK-ARM/cantest/*.ini
+MDK-ARM/*.uvguix.*
+MDK-ARM/uv4.log*
+MDK-ARM/.vscode/*.log*
+MDK-ARM/build_log.txt
+MDK-ARM/RTE/
+
+# CubeMX
+.mxproject
