@@ -60,7 +60,10 @@ void App_Init(void)
 {
   /* App_Init 在调度器启动前(MX_FREERTOS_Init)执行, 不能用 osDelay(依赖调度器),
    * 改用 HAL_Delay 等 USB 枚举。 */
+  printf("[app] App_Init enter, before HAL_Delay\r\n");
   HAL_Delay(500); /* Wait for USB enumeration */
+  printf("[app] after HAL_Delay, before Lift_Init\r\n");
+
 
   /* 升降系统初始化：注册 M2006 电机 (CANRegister 内部会配置 FIFO0 过滤器接收 0x201 反馈帧)。
    * 注意: bsp_can 的 CANServiceInit() 不会调用 HAL_CAN_Start(),
