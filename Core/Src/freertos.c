@@ -136,8 +136,16 @@ void StartDefaultTask(void *argument)
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
-/* USER CODE BEGIN Application */
 /* printf 重定向在 bsp/printf/bsp_printf.c (fputc)。
  * 旧 CAN demo 已随四层架构移植移除, 业务逻辑见 app/app_init.c。 */
+
+/* FreeRTOS 栈溢出钩子(configCHECK_FOR_STACK_OVERFLOW=2): 栈溢出时打印任务名,
+ * 替代直接跳NULL的HardFault, 直接定位是哪个任务栈不够。 */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  (void)xTask;
+  printf("\r\n*** STACK OVERFLOW in task: %s ***\r\n", pcTaskName);
+  while (1) {}
+}
 /* USER CODE END Application */
 

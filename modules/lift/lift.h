@@ -47,7 +47,7 @@ typedef struct {
 #define LIFT_TASK_PERIOD        20      // 任务周期 (ms)
 
 /* 任务参数 */
-#define LIFT_TASK_STACK_SIZE     256    // 任务堆栈大小 (word)
+#define LIFT_TASK_STACK_SIZE     512    // 任务堆栈大小 (word) - 加大防 printf/fputc 调用链栈溢出
 /* 优先级: osPriorityAboveNormal(32)。高于 osPriorityNormal(24) 的测试/监控任务,
  * 低于 osPriorityHigh(40) 的 DJIMotorTask(PID控制核心)。
  * 注: CMSIS-RTOS V2 优先级数值越高=优先级越高: Low(8) < BelowNormal(16) < Normal(24) < AboveNormal(32) < High(40) */
