@@ -38,7 +38,7 @@
 extern void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 
 /* ---- 任务参数 ---- */
-#define LIFT_TEST_TASK_STACK_SIZE  512                /* 堆栈(word), printf+%f耗栈大 */
+#define LIFT_TEST_TASK_STACK_SIZE  1024               /* 堆栈(word), printf→fputc→HAL_UART_Transmit 调用链深, 加大防栈溢出 */
 #define LIFT_TEST_TASK_PRIORITY    osPriorityNormal   /* 24, 低于LiftTask(32), 不干扰闭环 */
 #define LIFT_TEST_DISTANCE         100.0f             /* 单次上升/下降位移(cm), 可调 */
 #define LIFT_TEST_HOLD_MS          1000               /* 到位后停留时间(ms) */
@@ -126,13 +126,18 @@ void App_Init(void)
   };
   osThreadNew(CommandTask, NULL, &cmdTask_attributes);
 
-  /* 创建波形监控任务: 周期输出 JustFloat 波形 (第4步独立为可注册通道的 TelemetryTask) */
+  /* 创建波形监控任务: 周期输出 JustFloat 波形 (第4步独立为可注册通道的 TelemetryTask)
+   * 调试期临时禁用: TelemetryTask 用 HAL_UART_Transmit_DMA 发 USART1,
+   * 与 printf(阻塞 HAL_UART_Transmit) 并发抢 USART1, 状态机错乱致 HardFault
+   * (崩点 UART_WaitOnFlagUntilTimeout 读 USART1->SR)。先关掉让日志干净, 排查升降。 */
+#if 0
   const osThreadAttr_t teleTask_attributes = {
     .name = "TeleTask",
     .stack_size = 256 * 4,
     .priority = (osPriority_t)VOFA_TASK_PRIORITY,
   };
   osThreadNew(TelemetryTask, NULL, &teleTask_attributes);
+#endif
 }
 
 /* ===== VOFA+ 通信概览 =====
