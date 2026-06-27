@@ -22,7 +22,8 @@
 #include "usbd_cdc_if.h"
 
 /* USER CODE BEGIN INCLUDE */
-
+#include "cmsis_os2.h"       /* osMessageQueuePut (ISR 安全, 0 超时) */
+#include "uart_callback.h"   /* UART_Callback_GetCmdQueue: 复用 USART1 命令队列 */
 /* USER CODE END INCLUDE */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -31,6 +32,11 @@
 
 /* USER CODE BEGIN PV */
 /* Private variables ---------------------------------------------------------*/
+/* USB CDC 命令拼行缓冲: CDC_Receive_FS 逐字节拼行, 遇 \n/\r 成行后入命令队列。
+ * 与 bsp/uart/uart_callback.c 的 USART1 拼行路径对称, 复用同一命令队列,
+ * CommandTask 无需区分命令来源(USB / USART1)。 */
+static uint16_t cdc_rx_idx = 0;
+static char     cdc_rx_line[VOFA_RX_BUF_SIZE];
 
 /* USER CODE END PV */
 
@@ -261,6 +267,38 @@ static int8_t CDC_Control_FS(uint8_t cmd, uint8_t* pbuf, uint16_t length)
 static int8_t CDC_Receive_FS(uint8_t* Buf, uint32_t *Len)
 {
   /* USER CODE BEGIN 6 */
+  /* 将 USB 收到的字节逐字节拼行, 遇 \n/\r 成行后送入命令队列(与 USART1 路径
+   * 共用同一队列), 由 CommandTask 经 CMD_Dispatch 分发到各模块。
+   * 本函数在 USB 中断上下文调用, osMessageQueuePut 用 0 超时(队列满则丢弃)。 */
+  osMessageQueueId_t q = UART_Callback_GetCmdQueue();
+  for (uint32_t i = 0; i < *Len; i++)
+  {
+    uint8_t b = Buf[i];
+    if (b == '\n' || b == '\r')
+    {
+      if (cdc_rx_idx > 0)            /* 非空行才入队 */
+      {
+        cdc_rx_line[cdc_rx_idx] = '\0';
+        if (q != NULL)
+        {
+          osMessageQueuePut(q, cdc_rx_line, 0, 0);
+        }
+        cdc_rx_idx = 0;
+      }
+    }
+    else
+    {
+      if (cdc_rx_idx < VOFA_RX_BUF_SIZE - 1)
+      {
+        cdc_rx_line[cdc_rx_idx++] = (char)b;
+      }
+      else
+      {
+        cdc_rx_idx = 0;              /* 溢出丢弃, 防越界 */
+      }
+    }
+  }
+
   USBD_CDC_SetRxBuffer(&hUsbDeviceFS, &Buf[0]);
   USBD_CDC_ReceivePacket(&hUsbDeviceFS);
   return (USBD_OK);
