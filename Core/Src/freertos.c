@@ -55,7 +55,7 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 1024 * 4,   /* 4KB: defaultTask 跑 App_Init, printf→fputc→HAL_UART_Transmit 调用链深, 原 512B 溢出 */
+  .stack_size = 128 * 4,   /* 纯保活, App_Init 已移至调度器启动前 */
   .priority = (osPriority_t) osPriorityNormal,
 };
 
@@ -100,7 +100,11 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  /* 应用层初始化: 子系统(Lift/Emm_V5/CAN/UART)初始化 + 业务任务创建。
+   * 在调度器启动前(osKernelStart 之前)执行, 此时 osKernelInitialize 已完成,
+   * osThreadNew/osMessageQueueNew 可用; App_Init 内部用 HAL_Delay 而非 osDelay。
+   * defaultTask 回归纯保活, 不再承担初始化, 栈无需加大。 */
+  App_Init();
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -121,12 +125,7 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
-  /* 应用层初始化: 升降/步进/CAN/UART 子系统初始化编排 + 任务创建。
-   * 业务逻辑全部移至 app/app_init.c, freertos.c 仅作 CubeMX 骨架,
-   * 保证重新生成 freertos.c 时不覆盖应用代码。 */
-  App_Init();
-
-  /* defaultTask 保活 */
+  /* App_Init 已移至 MX_FREERTOS_Init()(调度器启动前), defaultTask 仅保活。 */
   for (;;)
   {
     osDelay(1000);
