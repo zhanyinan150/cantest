@@ -22,6 +22,8 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "usart.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -94,7 +96,28 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+  /* HardFault 诊断: 从异常栈帧提取故障寄存器, 经 printf(MicroLIB整数安全) 打印,
+   * 便于结合 .map 定位崩溃地址。printf 在 HardFault 上下文未必每次都能完整输出,
+   * 但多数情况能打出 PC, 远胜无脑死循环。 */
+  {
+    extern UART_HandleTypeDef huart1;
+    volatile uint32_t *p = (volatile uint32_t *)__get_PSP();
+    uint32_t r0, r1, r2, r3, r12, lr, pc, psr;
+    char buf[96];
+    r0 = p[0]; r1 = p[1]; r2 = p[2]; r3 = p[3];
+    r12 = p[4]; lr = p[5]; pc = p[6]; psr = p[7];
+    /* 直接走 HAL_UART_Transmit, 不依赖 printf 的运行时状态 */
+    int n = sprintf(buf, "\r\n*** HardFault *** PC=0x%08lX LR=0x%08lX PSR=0x%08lX\r\n",
+                    (unsigned long)pc, (unsigned long)lr, (unsigned long)psr);
+    HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 50);
+    n = sprintf(buf, "R0=0x%08lX R1=0x%08lX R2=0x%08lX R3=0x%08lX R12=0x%08lX\r\n",
+                (unsigned long)r0, (unsigned long)r1, (unsigned long)r2,
+                (unsigned long)r3, (unsigned long)r12);
+    HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 50);
+    n = sprintf(buf, "CFSR=0x%08lX HFSR=0x%08lX BFAR=0x%08lX\r\n",
+                (unsigned long)SCB->CFSR, (unsigned long)SCB->HFSR, (unsigned long)SCB->BFAR);
+    HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 50);
+  }
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
