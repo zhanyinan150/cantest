@@ -28,7 +28,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "bsp_dwt.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -88,7 +88,11 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* 初始化DWT高精度计时器, dji_motor.c 的 DWT_GetDeltaT 依赖此初始化。
+   * 注: Keil调试器会自动使能DWT, debug模式正常; 但脱机运行时若不调用
+   * DWT_Init, DWT计数器不工作, motor->dt为0, PID计算异常。两工程时钟一致
+   * (168MHz), 故参数与源工程相同 SystemCoreClock/1000000 = 168。 */
+  DWT_Init(SystemCoreClock / 1000000U);
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
