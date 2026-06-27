@@ -41,7 +41,7 @@ extern UART_HandleTypeDef huart2;
 extern UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN Private defines */
-
+extern uint8_t uart1_rx_byte;  /* USART1 逐字节中断接收缓冲 (bsp/uart/uart_callback.c 使用) */
 /* USER CODE END Private defines */
 
 void MX_UART5_Init(void);

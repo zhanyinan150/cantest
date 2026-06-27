@@ -22,6 +22,9 @@
 
 /* USER CODE BEGIN 0 */
 
+/* USART1 逐字节中断接收缓冲, 由 bsp/uart/uart_callback.c 的 HAL_UART_RxCpltCallback 使用 */
+uint8_t uart1_rx_byte;
+
 /* USER CODE END 0 */
 
 UART_HandleTypeDef huart5;
