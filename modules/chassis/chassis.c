@@ -327,8 +327,8 @@ static void ChassisMTestTask(void *argument)
 {
     (void)argument;
     osDelay(1000);
-    printf("[chassis] mtest 启动: 前进%.0fcm ↔ 后退%.0fcm 循环\r\n",
-           (double)CHASSIS_MTEST_DISTANCE_CM, (double)CHASSIS_MTEST_DISTANCE_CM);
+    printf("[chassis] mtest 启动: 前进%dcm ↔ 后退%dcm 循环\r\n",
+           (int)CHASSIS_MTEST_DISTANCE_CM, (int)CHASSIS_MTEST_DISTANCE_CM);
     for (;;) {
         Chassis_MoveDistance( CHASSIS_MTEST_DISTANCE_CM, 0);
         osDelay(CHASSIS_MTEST_HOLD_MS);

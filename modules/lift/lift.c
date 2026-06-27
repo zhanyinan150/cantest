@@ -19,6 +19,7 @@
 #include "bsp_can.h"
 #include "can.h"
 #include "main.h"
+#include "bsp_log.h"   /* Log_PrintFloat2: MicroLIB 安全浮点打印 */
 #include "stdio.h"
 #include "string.h"
 #include "stdlib.h"
@@ -223,7 +224,9 @@ int Lift_Stop(void)
     lift_status.target_displacement = lift_status.current_displacement;
     lift_status.is_moving = false;
 
-    printf("升降运动已停止在位移: %.2fcm\r\n", lift_status.current_displacement);
+    printf("升降运动已停止在位移: ");
+    Log_PrintFloat2("", lift_status.current_displacement);
+    printf("cm\r\n");
     return 0;
 }
 
