@@ -836,10 +836,12 @@ river/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include -I../Midd
 lewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Third_Party/
 FreeRTOS/Source/portable/RVDS/ARM_CM4F -I../Drivers/CMSIS/Device/ST/STM32F4xx/I
 nclude -I../Drivers/CMSIS/Include -I../bsp/dwt -I../bsp/log -I../bsp/printf -I.
-./bsp/vofa -I../bsp/can -I../modules/PID -I../modules/ADRC -I.\RTE\_cantest -IE
-:\ARM\CMSIS\5.0.1\CMSIS\Include --predefine="__MICROLIB SETA 1" --predefine="__
-UVISION_VERSION SETA 524" --predefine="_RTE_ SETA 1" --predefine="STM32F407xx S
-ETA 1" --list=startup_stm32f407xx.lst startup_stm32f407xx.s
+./bsp/vofa -I../bsp/can -I../modules/PID -I../modules/ADRC -I../modules/dji_mot
+or -I../modules/ZDT_EmmV5 -I../modules/ZDT_EmmV5/CAN -I../modules/ZDT_X42 -I../
+modules/servo -I.\RTE\_cantest -IE:\ARM\CMSIS\5.0.1\CMSIS\Include --predefine="
+__MICROLIB SETA 1" --predefine="__UVISION_VERSION SETA 524" --predefine="_RTE_ 
+SETA 1" --predefine="STM32F407xx SETA 1" --list=startup_stm32f407xx.lst startup
+_stm32f407xx.s
 
 
 

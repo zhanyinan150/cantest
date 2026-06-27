@@ -333,7 +333,7 @@
               <MiscControls />
               <Define>USE_HAL_DRIVER,STM32F407xx</Define>
               <Undefine />
-              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../USB_DEVICE/App;../USB_DEVICE/Target;../Middlewares/ST/STM32_USB_Device_Library/Core/Inc;../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../modules/PID;../modules/ADRC</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../USB_DEVICE/App;../USB_DEVICE/Target;../Middlewares/ST/STM32_USB_Device_Library/Core/Inc;../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../modules/PID;../modules/ADRC;../modules/dji_motor;../modules/ZDT_EmmV5;../modules/ZDT_EmmV5/CAN;../modules/ZDT_X42;../modules/servo</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -351,7 +351,7 @@
               <MiscControls />
               <Define />
               <Undefine />
-              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../modules/PID;../modules/ADRC</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../modules/PID;../modules/ADRC;../modules/dji_motor;../modules/ZDT_EmmV5;../modules/ZDT_EmmV5/CAN;../modules/ZDT_X42;../modules/servo</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>
@@ -633,6 +633,31 @@
               <FileName>ADRC.c</FileName>
               <FileType>1</FileType>
               <FilePath>../modules/ADRC/ADRC.c</FilePath>
+            </File>
+            <File>
+              <FileName>dji_motor.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../modules/dji_motor/dji_motor.c</FilePath>
+            </File>
+            <File>
+              <FileName>Emm_V5.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../modules/ZDT_EmmV5/Emm_V5.c</FilePath>
+            </File>
+            <File>
+              <FileName>Emm_V5_CAN.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../modules/ZDT_EmmV5/CAN/Emm_V5_CAN.c</FilePath>
+            </File>
+            <File>
+              <FileName>ZDT_X42_V2.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../modules/ZDT_X42/ZDT_X42_V2.c</FilePath>
+            </File>
+            <File>
+              <FileName>servo.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../modules/servo/servo.c</FilePath>
             </File>
           </Files>
         </Group>
