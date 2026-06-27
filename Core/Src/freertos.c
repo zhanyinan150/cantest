@@ -55,7 +55,7 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 1024 * 4,   /* 4KB: defaultTask 跑 App_Init, printf→fputc→HAL_UART_Transmit 调用链深, 原 512B 溢出 */
   .priority = (osPriority_t) osPriorityNormal,
 };
 

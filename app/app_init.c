@@ -102,16 +102,13 @@ void App_Init(void)
   Chassis_Init();
 
   /* 升降控制任务已在 Lift_Init() 内创建 */
-  /* 创建升降上升/下降测试任务: 调用 Lift_Up/Down 验证 M2006 升降系统
-   * 调试期临时禁用: 二分定位 HardFault(跳NULL/IACCVIOL), 先不创建此任务看是否还崩 */
-#if 0
+  /* 创建升降上升/下降测试任务: 调用 Lift_Up/Down 验证 M2006 升降系统 */
   const osThreadAttr_t liftTestTask_attributes = {
     .name = "LiftTestTask",
     .stack_size = LIFT_TEST_TASK_STACK_SIZE * 4,
     .priority = (osPriority_t)LIFT_TEST_TASK_PRIORITY,
   };
   osThreadNew(LiftTestTask, NULL, &liftTestTask_attributes);
-#endif
 
   /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
    * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
@@ -205,15 +202,64 @@ static void LiftTestTask(void *argument)
   (void)argument;
   osDelay(2000); /* 等待 M2006 反馈稳定 */
 
-  /* === 最小诊断版: 二分定位 HardFault 根因 ===
-   * 仅一句纯字符串 printf(无 %f 无 Log_PrintFloat 无 Lift 调用)。
-   * 若此版仍 HardFault → 问题在 printf/fputc/USART1 或任务调度/栈本身。
-   * 若此版不崩 → 逐步加回 Log_PrintFloat / Lift_Up 定位越界点。 */
-  printf("[lift_test] task alive\r\n");
+  printf("[lift_test] 升降测试任务启动, 单次位移 ");
+  Log_PrintFloat1("", LIFT_TEST_DISTANCE);
+  printf("cm\r\n");
+  /* 打印电机反馈, 确认CAN通信正常 (ecd应在0-8191, temp室温) */
+  if (lift_motor != NULL) {
+    printf("[lift_test] M2006反馈: ecd=%u speed=", (unsigned)lift_motor->measure.ecd);
+    Log_PrintFloat1("", lift_motor->measure.speed_aps);
+    printf("deg/s cur=%d temp=%dC\r\n",
+           lift_motor->measure.real_current, lift_motor->measure.temperature);
+    /* 诊断: 2秒后CAN接收计数器, 若为0说明从未收到0x201反馈帧 */
+    if (lift_motor->motor_can_instance) {
+      printf("[lift_test] CAN1 rx_counter=%lu (0=从未收到反馈)\r\n",
+             (unsigned long)lift_motor->motor_can_instance->rx_counter);
+    }
+  } else {
+    printf("[lift_test] 警告: lift_motor未初始化!\r\n");
+  }
 
   for (;;)
   {
-    printf("[lift_test] tick\r\n");
-    osDelay(1000);
+    /* 上升 */
+    printf("[lift_test] 上升 ");
+    Log_PrintFloat1("", LIFT_TEST_DISTANCE);
+    printf("cm\r\n");
+    Lift_Up(LIFT_TEST_DISTANCE);
+    if (Lift_WaitUntilAtTarget(LIFT_TEST_WAIT_TIMEOUT)) {
+      printf("[lift_test] 上升到位 位移=");
+      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+      printf("cm 速度=");
+      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+    } else {
+      printf("[lift_test] 上升超时! 位移=");
+      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+      printf("cm 速度=");
+      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+    }
+    osDelay(LIFT_TEST_HOLD_MS);
+
+    /* 下降 */
+    printf("[lift_test] 下降 ");
+    Log_PrintFloat1("", LIFT_TEST_DISTANCE);
+    printf("cm\r\n");
+    Lift_Down(LIFT_TEST_DISTANCE);
+    if (Lift_WaitUntilAtTarget(LIFT_TEST_WAIT_TIMEOUT)) {
+      printf("[lift_test] 下降到位 位移=");
+      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+      printf("cm 速度=");
+      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+    } else {
+      printf("[lift_test] 下降超时! 位移=");
+      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+      printf("cm 速度=");
+      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+    }
+    osDelay(LIFT_TEST_HOLD_MS);
   }
 }
