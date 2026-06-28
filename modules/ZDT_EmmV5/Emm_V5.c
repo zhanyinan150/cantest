@@ -7,7 +7,7 @@
 // 函数前向声明，避免隐式声明警告
 void Emm_V5_Set_Encoder_Zero(uint8_t id);
 void Emm_V5_Get_All_Encoders(int32_t encoder[4]);
-static int32_t Emm_V5_Read_Encoder(uint8_t addr);
+int32_t Emm_V5_Read_Encoder(uint8_t addr);
 
 static SemaphoreHandle_t usart6_rx_sem = NULL;
 
@@ -361,20 +361,22 @@ void Emm_V5_Origin_Interrupt(uint8_t addr)
 }
 
 /**
-  * @brief    初始化信号量和累计编码器计数器
+  * @brief    初始化 UART5 接收信号量 + 清零编码器累计 (不预读总线)
+  * @note     仅创建信号量并清零累计数组; 实际编码器读取由调用方按需进行。
+  *           信号量名 usart6_rx_sem 为历史命名残留, 实际服务 UART5。
+  *           必须在首次 HAL_UART_Receive_DMA(&huart5,...) 之前调用, 否则回调
+  *           Emm_V5_UART_RxCpltCallback 因 sem==NULL 而失效。
   */
 void Emm_V5_Init(void)
 {
     if (usart6_rx_sem == NULL) {
         usart6_rx_sem = xSemaphoreCreateBinary();
     }
-    Emm_V5_Get_All_Encoders(accumulated_encoder);
-    // 初始化编码器累计值和原始值
     for (int i = 0; i < 4; i++) {
         accumulated_encoder[i] = 0;
         last_raw_encoder[i] = 0;
+        encoder_zero_offset[i] = 0;
     }
-Emm_V5_Set_Encoder_Zero(0);
 }
 
 /**
@@ -392,81 +394,56 @@ void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
-// 读取单个电机编码器累计值（内部使用）
-static int32_t Emm_V5_Read_Encoder(uint8_t addr)
+// 读取单个电机编码器累计值（多圈, 含回绕处理）。阻塞 Q&A: 发3字节→DMA收5字节→信号量同步。
+int32_t Emm_V5_Read_Encoder(uint8_t addr)
 {
     uint8_t cmd[3] = {addr, 0x31, 0x6B}; // S_ENCL指令
     uint8_t rx_buf[5] = {0}; // 返回5字节：地址 + 0x31 + 高8位 + 低8位 + 校验字节
     int32_t raw_value = 0;
+    int idx = addr - 1;
 
-    // 避免频繁清空缓冲区和日志，提高速度
-    static uint8_t debug_count = 0;
-    bool debug_log = (++debug_count % 10) == 0; // 只有每10次才输出日志
-
-    // 先清空缓冲区和状态
+    // 先清空缓冲区和状态, 避免残留数据
     __HAL_UART_FLUSH_DRREGISTER(&huart5);
     HAL_UART_DMAStop(&huart5);
 
-    // 记录发送指令 - 减少日志输出提高速度
-    if (debug_log) {
-        LOGINFO("发送指令 ID:%d", addr);
-    }
-
-    // 发送读取编码器命令 - 使用阻塞方式但缩短超时
+    // 发送读取编码器命令 (阻塞, 短超时)
     HAL_UART_Transmit(&huart5, cmd, 3, 5);
 
     // 启动DMA接收，返回5字节数据
     HAL_UART_Receive_DMA(&huart5, rx_buf, 5);
 
     if (usart6_rx_sem) {
-        if (xSemaphoreTake(usart6_rx_sem, pdMS_TO_TICKS(30)) == pdTRUE) { // 适当减少超时时间
-            // 首先检查地址匹配
+        if (xSemaphoreTake(usart6_rx_sem, pdMS_TO_TICKS(30)) == pdTRUE) {
+            // 校验地址 + 功能码
             if (rx_buf[0] == addr && rx_buf[1] == 0x31) {
                 // 编码器值 = 高8位 << 8 | 低8位
                 raw_value = (int32_t)((rx_buf[2] << 8) | rx_buf[3]);
 
-                // 计算编码器累计值 - 处理周期性清零和溢出
-                int idx = addr - 1;
-
-                // 检测清零或大幅度变化
+                // 多圈累计: 处理周期性清零与正反向溢出
                 int32_t diff = raw_value - last_raw_encoder[idx];
 
-                // 处理编码器周期性清零 - 如果原来不是0而现在变成了较小的值，说明清零了
                 if (last_raw_encoder[idx] > ENCODER_HALF && raw_value < ENCODER_HALF/2) {
-                    // 检测到清零周期，累加上一个最大值
+                    // 检测到清零周期, 累加上一个最大值
                     accumulated_encoder[idx] += (ENCODER_MAX - last_raw_encoder[idx]) + raw_value;
-                }
-                // 处理编码器溢出 - 如果原来接近最大值而现在变成了较小的值，说明溢出了
-                else if (diff < -ENCODER_HALF) {
+                } else if (diff < -ENCODER_HALF) {
+                    // 正向溢出
                     accumulated_encoder[idx] += ENCODER_MAX + diff;
-                }
-                // 处理编码器反向溢出 - 如果原来是较小的值而现在变成了接近最大值，说明反向溢出了
-                else if (diff > ENCODER_HALF) {
+                } else if (diff > ENCODER_HALF) {
+                    // 反向溢出
                     accumulated_encoder[idx] -= ENCODER_MAX - diff;
-                }
-                // 正常情况直接累加差值
-                else {
+                } else {
                     accumulated_encoder[idx] += diff;
                 }
 
-                // 更新上次的原始编码器值
                 last_raw_encoder[idx] = raw_value;
-
-                if (debug_log) {
-                    LOGINFO("ID:%d 值:%d, 累计值:%d", addr, raw_value, accumulated_encoder[idx]);
-                }
                 return accumulated_encoder[idx]; // 返回累计值
-            } else if (debug_log) {
-                LOGWARNING("ID:%d 响应错误: [%02X %02X %02X %02X %02X]",
-                       addr, rx_buf[0], rx_buf[1], rx_buf[2], rx_buf[3], rx_buf[4]);
             }
-        } else if (debug_log) {
-            LOGERROR("ID:%d 接收超时", addr);
+            // 响应帧不匹配: 静默返回上次累计值
         }
+        // 接收超时: 静默返回上次累计值
     }
 
-    osDelay(5); // 减少延时，加快读取速度
-    return accumulated_encoder[addr-1]; // 即使读取失败也返回上次的累计值
+    return accumulated_encoder[idx]; // 读取失败也返回上次累计值
 }
 
 /**

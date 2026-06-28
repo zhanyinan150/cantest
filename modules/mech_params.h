@@ -49,4 +49,16 @@
 #define CHASSIS_WHEEL_CIRCUMFERENCE_CM  (MECH_PI * CHASSIS_WHEEL_DIAMETER_CM)
 #define CHASSIS_PULSE_PER_REV         65536.0f  /* Emm_V5 每转脉冲 (编码器4倍频, 一圈0-65535) */
 
+
+/* ================================================================== */
+/* ===== 横移机构: 单 Emm_V5 步进 + 同步带同步轮 =================== */
+/* ================================================================== */
+/* Emm_V5 步进闭环, 电机轴直驱同步轮(无减速), 同步带带动横向移动。
+ * 位置命令 clk 单位 = 每转脉冲 65536 (编码器4倍频)。
+ * ⚠️ LATERAL_PULLEY_CIRCUMFERENCE_CM 为占位值, 实测同步轮周长后改此处。
+ * ⚠️ LATERAL_DIR_INVERT: 若实际方向与指令相反(上升命令却下降), 改 1 翻转。 */
+#define LATERAL_PULLEY_CIRCUMFERENCE_CM  6.0f    /* 同步轮周长 (cm) 占位值, 待实测 */
+#define LATERAL_PULSE_PER_REV            65536.0f
+#define LATERAL_DIR_INVERT               0       /* 方向反转标志: 0=正常 1=翻转CW/CCW与编码器符号 */
+
 #endif /* __MECH_PARAMS_H */

@@ -52,5 +52,6 @@ void Emm_V5_Get_All_Encoders(int32_t encoder[4]);
 void Emm_V5_Init(void);
 void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 void Emm_V5_Reset_Encoder_Accumulation(uint8_t id);
+int32_t Emm_V5_Read_Encoder(uint8_t addr);  /* 读取单电机编码器累计值 (多圈, 含回绕处理) */
 void X_vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF);
 #endif

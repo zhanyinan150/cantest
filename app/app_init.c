@@ -24,6 +24,7 @@
 #include "lift.h"
 #include "Emm_V5_CAN.h"
 #include "chassis.h"
+#include "lateral.h"
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"
@@ -38,6 +39,7 @@
  * 故只包含 Emm_V5_CAN.h(拿 Emm_V5_CAN_Init), 对回调函数作前向声明。
  * (UART_HandleTypeDef 已由 can.h → stm32f4xx_hal.h 引入) */
 extern void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart);
+extern void Emm_V5_Init(void);  /* 创建 UART5 接收信号量 (定义在 Emm_V5.c, 与 Emm_V5_CAN.h 枚举冲突故不 include 其头) */
 
 /* ---- 任务参数 ---- */
 #define LIFT_TEST_TASK_STACK_SIZE  1024               /* 堆栈(word), printf→fputc→HAL_UART_Transmit 调用链深, 加大防栈溢出 */
@@ -119,6 +121,13 @@ void App_Init(void)
    * UART5(步进电机DMA反馈)由 Emm_V5 注册, 实现 BSP↔Modules 解耦。 */
   UART_Callback_Register(UART5, Emm_V5_UART_RxCpltCallback);
   UART_Callback_Init();
+
+  /* 横移系统(Emm_V5 步进, UART5)初始化: Emm_V5_Init 创建 UART5 DMA 接收信号量
+   * (必须在首次 Read_Encoder 之前, 否则回调因 sem==NULL 失效); Lateral_Init 启动
+   * LateralTask(任务首帧使能电机, 独占 UART5 总线, VOFA 命令仅设意图标志避免并发)。
+   * 需在 UART_Callback_Register(UART5,...) 之后, 确保接收回调已入分发表。 */
+  Emm_V5_Init();
+  Lateral_Init();
 
   /* 创建命令消费任务: 阻塞等待 UART 命令队列, 分发到各模块。
    * 优先级 BelowNormal(16), 低频人工输入, 不干扰控制任务。 */
