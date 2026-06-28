@@ -38,8 +38,8 @@ typedef struct {
 /* 机械参数 (轮径/减速比/周长) 统一在 mech_params.h 定义, 周长由 π×轮径 派生 */
 
 /* 运动参数定义 */
-#define LIFT_DEFAULT_SPEED       5.0f   // 默认上升/下降速度 (cm/s)
-#define LIFT_MAX_SPEED          10.0f   // 最大速度 (cm/s)
+#define LIFT_DEFAULT_SPEED       10.0f   // 默认上升/下降速度 (cm/s)
+#define LIFT_MAX_SPEED          20.0f   // 最大速度 (cm/s)
 /* 位移上下限: 36:1 减速 + 多圈 total_angle 闭环, 实际行程远大于单圈。
  * 设 ±400cm, 匹配预设点位(最高360cm)。所有目标位置入口统一经此限幅。 */
 #define LIFT_MAX_DISPLACEMENT   400.0f  // 最大向上位移 (cm)

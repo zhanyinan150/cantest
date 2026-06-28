@@ -30,6 +30,8 @@
 #include "bsp_log.h"   /* Log_PrintFloat1/2: MicroLIB 安全浮点打印 */
 
 #include "stdio.h"
+#include "math.h"
+#include "stdbool.h"
 
 /* Emm_V5.h 与 Emm_V5_CAN.h 各自独立定义了 S_VER 等状态枚举且无相互 include
  * 保护, 不可在同一编译单元同时包含。此处仅需注册步进电机的 UART 接收回调,
@@ -206,13 +208,12 @@ static void LiftTestTask(void *argument)
   printf("[lift_test] 升降测试任务启动, 单次位移 ");
   Log_PrintFloat1("", LIFT_TEST_DISTANCE);
   printf("cm\r\n");
-  /* 打印电机反馈, 确认CAN通信正常 (ecd应在0-8191, temp室温) */
+  /* 打印电机反馈, 确认CAN通信正常 (ecd应在0-8191, C610不报温度故temp=0正常) */
   if (lift_motor != NULL) {
     printf("[lift_test] M2006反馈: ecd=%u speed=", (unsigned)lift_motor->measure.ecd);
     Log_PrintFloat1("", lift_motor->measure.speed_aps);
-    printf("deg/s cur=%d temp=%dC\r\n",
+    printf("deg/s cur=%d temp=%dC(C610不报温度)\r\n",
            lift_motor->measure.real_current, lift_motor->measure.temperature);
-    /* 诊断: 2秒后CAN接收计数器, 若为0说明从未收到0x201反馈帧 */
     if (lift_motor->motor_can_instance) {
       printf("[lift_test] CAN1 rx_counter=%lu (0=从未收到反馈)\r\n",
              (unsigned long)lift_motor->motor_can_instance->rx_counter);
@@ -228,18 +229,44 @@ static void LiftTestTask(void *argument)
     Log_PrintFloat1("", LIFT_TEST_DISTANCE);
     printf("cm\r\n");
     Lift_Up(LIFT_TEST_DISTANCE);
-    if (Lift_WaitUntilAtTarget(LIFT_TEST_WAIT_TIMEOUT)) {
-      printf("[lift_test] 上升到位 位移=");
-      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-      printf("cm 速度=");
-      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
-    } else {
-      printf("[lift_test] 上升超时! 位移=");
-      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-      printf("cm 速度=");
-      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+
+    /* 等待到位, 期间每100ms输出调试数据 */
+    {
+      uint32_t waited = 0;
+      bool arrived = false;
+      while (waited < LIFT_TEST_WAIT_TIMEOUT) {
+        float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
+        if (err <= 2.0f) { arrived = true; break; }
+        /* 每100ms打印: 目标位移 / 当前位移 / 误差 / 角速度 / 电流 / PID输出 */
+        printf("[lift] tgt=");
+        Log_PrintFloat2("", lift_status.target_displacement);
+        printf(" cur=");
+        Log_PrintFloat2("", lift_status.current_displacement);
+        printf(" err=");
+        Log_PrintFloat2("", err);
+        if (lift_motor) {
+          printf(" spd=");
+          Log_PrintFloat1("", lift_motor->measure.speed_aps);
+          printf(" cur=%d pid_ref=", lift_motor->measure.real_current);
+          Log_PrintFloat1("", lift_motor->motor_controller.pid_ref);
+        }
+        printf("\r\n");
+        osDelay(100);
+        waited += 100;
+      }
+      if (arrived) {
+        printf("[lift_test] 上升到位 位移=");
+        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+        printf("cm 速度=");
+        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+      } else {
+        printf("[lift_test] 上升超时! 位移=");
+        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+        printf("cm 速度=");
+        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+      }
     }
     osDelay(LIFT_TEST_HOLD_MS);
 
@@ -248,18 +275,43 @@ static void LiftTestTask(void *argument)
     Log_PrintFloat1("", LIFT_TEST_DISTANCE);
     printf("cm\r\n");
     Lift_Down(LIFT_TEST_DISTANCE);
-    if (Lift_WaitUntilAtTarget(LIFT_TEST_WAIT_TIMEOUT)) {
-      printf("[lift_test] 下降到位 位移=");
-      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-      printf("cm 速度=");
-      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
-    } else {
-      printf("[lift_test] 下降超时! 位移=");
-      Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-      printf("cm 速度=");
-      Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-      printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+
+    /* 等待到位, 期间每100ms输出调试数据 */
+    {
+      uint32_t waited = 0;
+      bool arrived = false;
+      while (waited < LIFT_TEST_WAIT_TIMEOUT) {
+        float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
+        if (err <= 2.0f) { arrived = true; break; }
+        printf("[lift] tgt=");
+        Log_PrintFloat2("", lift_status.target_displacement);
+        printf(" cur=");
+        Log_PrintFloat2("", lift_status.current_displacement);
+        printf(" err=");
+        Log_PrintFloat2("", err);
+        if (lift_motor) {
+          printf(" spd=");
+          Log_PrintFloat1("", lift_motor->measure.speed_aps);
+          printf(" cur=%d pid_ref=", lift_motor->measure.real_current);
+          Log_PrintFloat1("", lift_motor->motor_controller.pid_ref);
+        }
+        printf("\r\n");
+        osDelay(100);
+        waited += 100;
+      }
+      if (arrived) {
+        printf("[lift_test] 下降到位 位移=");
+        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+        printf("cm 速度=");
+        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+      } else {
+        printf("[lift_test] 下降超时! 位移=");
+        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
+        printf("cm 速度=");
+        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
+        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
+      }
     }
     osDelay(LIFT_TEST_HOLD_MS);
   }

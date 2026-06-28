@@ -105,7 +105,7 @@ int Lift_Init(void)
         .controller_setting_init_config = {
             .close_loop_type = ANGLE_AND_SPEED_LOOP,  /* 速度环 + 位置环串级 */
             .outer_loop_type = ANGLE_LOOP,               /* 外环为位置环 */
-            .motor_reverse_flag = MOTOR_DIRECTION_REVERSE,
+            .motor_reverse_flag = MOTOR_DIRECTION_NORMAL,  /* 电机正方向=位移增大(下降), 无需反转 */
             .feedback_reverse_flag = FEEDBACK_DIRECTION_NORMAL,
             .angle_feedback_source = MOTOR_FEED,
             .speed_feedback_source = MOTOR_FEED,
