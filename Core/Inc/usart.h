@@ -32,6 +32,8 @@ extern "C" {
 
 /* USER CODE END Includes */
 
+extern UART_HandleTypeDef huart4;
+
 extern UART_HandleTypeDef huart5;
 
 extern UART_HandleTypeDef huart1;
@@ -44,6 +46,7 @@ extern UART_HandleTypeDef huart3;
 extern uint8_t uart1_rx_byte;  /* USART1 逐字节中断接收缓冲 (bsp/uart/uart_callback.c 使用) */
 /* USER CODE END Private defines */
 
+void MX_UART4_Init(void);
 void MX_UART5_Init(void);
 void MX_USART1_UART_Init(void);
 void MX_USART2_UART_Init(void);
