@@ -118,6 +118,14 @@ float Lift_GetCurrentDisplacement(void);
  */
 bool Lift_WaitUntilAtTarget(uint32_t timeout_ms);
 
+/**
+ * @brief 注册升降到位回调 (上层 mission 用于事件驱动编排)
+ * @note  回调在 LiftTask 上下文执行, 应简短(如 xEventGroupSetBits)。
+ *        到位=位移误差≤2cm, 边沿触发一次(运动中→到位)。
+ *        反向解耦: lift 不 include mission, 由 mission 主动注册。
+ */
+void Lift_SetArrivedCallback(void (*cb)(void));
+
 /* ===== PID 调参 API =====
  * 封装对升降电机串级 PID 的读写, 避免外部直接访问 lift_motor->motor_controller
  * 内部结构, 实现"PID调参走模块API而非改内部变量"的解耦。 */

@@ -31,6 +31,10 @@
 Lateral_Status_t lateral_status;
 osThreadId_t lateralTaskHandle = NULL;
 
+/* 到位回调 (由上层 mission 注册, 位置模式到位时触发, 反向解耦) */
+static void (*s_arrived_cb)(void) = NULL;
+void Lateral_SetArrivedCallback(void (*cb)(void)) { s_arrived_cb = cb; }
+
 /* 私有函数声明 */
 static float Lateral_PulsesToCm(int32_t pulses);
 static int32_t Lateral_CmToPulses(float cm);
@@ -163,6 +167,7 @@ void LateralTask(void *argument)
                     lateral_status.arrived = true;
                     lateral_status.mode = LATERAL_MODE_IDLE;
                     lateral_status.pos_pending = false;
+                    if (s_arrived_cb) s_arrived_cb();
                 } else {
                     uint8_t dir = Lateral_DirForSigned(delta);
                     Emm_V5_Pos_Control(LATERAL_MOTOR_ADDR, dir,
@@ -178,12 +183,14 @@ void LateralTask(void *argument)
                     lateral_status.arrived = true;
                     lateral_status.mode = LATERAL_MODE_IDLE;
                     printf("[lateral] 到位 disp=%.2fcm\r\n", lateral_status.current_displacement);
+                    if (s_arrived_cb) s_arrived_cb();
                 } else if ((HAL_GetTick() - pos_start) > LATERAL_POS_TIMEOUT_MS) {
                     lateral_status.arrived = false;
                     lateral_status.mode = LATERAL_MODE_IDLE;
                     Emm_V5_Stop_Now(LATERAL_MOTOR_ADDR, false);
                     printf("[lateral] 位置超时 disp=%.2f tgt=%.2f\r\n",
                            lateral_status.current_displacement, lateral_status.target_displacement);
+                    if (s_arrived_cb) s_arrived_cb();  /* 超时也通知, 避免编排任务死等 */
                 }
             }
             break;

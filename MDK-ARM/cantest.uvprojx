@@ -336,7 +336,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F407xx</Define>
               <Undefine></Undefine>
-              <IncludePath>../app;../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../USB_DEVICE/App;../USB_DEVICE/Target;../Middlewares/ST/STM32_USB_Device_Library/Core/Inc;../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../bsp/cmd;../bsp/telemetry;../bsp/uart;../modules;../modules/PID;../modules/ADRC;../modules/dji_motor;../modules/ZDT_EmmV5;../modules/ZDT_EmmV5/CAN;../modules/ZDT_X42;../modules/servo;../modules/lift;../modules/chassis;../modules/lateral</IncludePath>
+              <IncludePath>../app;../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../USB_DEVICE/App;../USB_DEVICE/Target;../Middlewares/ST/STM32_USB_Device_Library/Core/Inc;../Middlewares/ST/STM32_USB_Device_Library/Class/CDC/Inc;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../bsp/cmd;../bsp/telemetry;../bsp/uart;../modules;../modules/PID;../modules/ADRC;../modules/dji_motor;../modules/ZDT_EmmV5;../modules/ZDT_EmmV5/CAN;../modules/ZDT_X42;../modules/servo;../modules/lift;../modules/chassis;../modules/lateral;../modules/mission</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -354,7 +354,7 @@
               <MiscControls></MiscControls>
               <Define></Define>
               <Undefine></Undefine>
-              <IncludePath>../app;../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../bsp/cmd;../bsp/telemetry;../bsp/uart;../modules;../modules/PID;../modules/ADRC;../modules/dji_motor;../modules/ZDT_EmmV5;../modules/ZDT_EmmV5/CAN;../modules/ZDT_X42;../modules/servo;../modules/lift;../modules/chassis;../modules/lateral</IncludePath>
+              <IncludePath>../app;../Core/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc;../Drivers/STM32F4xx_HAL_Driver/Inc/Legacy;../Middlewares/Third_Party/FreeRTOS/Source/include;../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2;../Middlewares/Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F;../Drivers/CMSIS/Device/ST/STM32F4xx/Include;../Drivers/CMSIS/Include;../bsp/dwt;../bsp/log;../bsp/printf;../bsp/vofa;../bsp/can;../bsp/cmd;../bsp/telemetry;../bsp/uart;../modules;../modules/PID;../modules/ADRC;../modules/dji_motor;../modules/ZDT_EmmV5;../modules/ZDT_EmmV5/CAN;../modules/ZDT_X42;../modules/servo;../modules/lift;../modules/chassis;../modules/lateral;../modules/mission</IncludePath>
             </VariousControls>
           </Aads>
           <LDads>
@@ -699,6 +699,11 @@
               <FileName>lateral.c</FileName>
               <FileType>1</FileType>
               <FilePath>../modules/lateral/lateral.c</FilePath>
+            </File>
+            <File>
+              <FileName>mission.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../modules/mission/mission.c</FilePath>
             </File>
           </Files>
         </Group>

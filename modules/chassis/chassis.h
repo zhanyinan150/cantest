@@ -103,11 +103,29 @@ void Chassis_RegisterCommands(void);
 int Chassis_MoveDistance(float distance_cm, uint16_t vel_rpm);
 
 /**
+  * @brief  位置模式移动指定距离(非阻塞: 仅下发命令, 不等待到位)
+  * @note   到位检测由 ChassisTask 周期查 S_FLAG 完成, 到位时调已注册的到位回调。
+  *         适合编排任务并行等待多模块到位 (配合 Event Group)。需在 ChassisTask 外调用。
+  *         ⚠️ 与 Chassis_MoveDistance(阻塞版) 不可并发: 两者都触发 ChassisTask 读 S_FLAG,
+  *            且阻塞版内部 Chassis_WaitArrive 也读 S_FLAG, 并发会撕裂 CAN2 rx_buff。
+  *            mission 用异步版后, 勿再并发发 mfwd/mrev 命令。
+  * @retval 0 已下发, -1 参数非法(距离0)
+  */
+int Chassis_MoveDistanceAsync(float distance_cm, uint16_t vel_rpm);
+
+/**
   * @brief  位置模式到位等待: 轮询双轮 S_FLAG 直到均到位或超时/堵转
   * @retval 0 双轮均到位, -1 超时或堵转
   * @note   S_FLAG(0x3A): &0x02=到位 &0x04=堵转 &0x08=堵转保护。
   *         阻塞调用(任务上下文), 与 Read_Encoder 共享 rx_buff 不可并发。
   */
 int Chassis_WaitArrive(void);
+
+/**
+  * @brief  注册位置模式到位回调 (上层 mission 用于事件驱动编排)
+  * @note   回调在 ChassisTask 上下文执行, 应简短(如 xEventGroupSetBits)。
+  *         反向解耦: chassis 不 include mission, 由 mission 主动注册。
+  */
+void Chassis_SetArrivedCallback(void (*cb)(void));
 
 #endif /* __CHASSIS_H */

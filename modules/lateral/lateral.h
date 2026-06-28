@@ -98,6 +98,9 @@ int Lateral_Enable(bool en);
 /** @brief 阻塞等待位置模式到位/超时 (供测试任务用, 不访问总线) */
 bool Lateral_WaitArrival(uint32_t timeout_ms);
 
+/** @brief 注册位置模式到位回调 (上层 mission 用于事件驱动编排, 反向解耦) */
+void Lateral_SetArrivedCallback(void (*cb)(void));
+
 /** @brief 获取当前位移 (cm) */
 float Lateral_GetCurrentDisplacement(void);
 

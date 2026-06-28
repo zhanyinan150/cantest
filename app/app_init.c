@@ -6,7 +6,7 @@
   * 从 freertos.c 抽离的应用逻辑:
   *   - App_Init(): 升降/步进/CAN/UART 子系统初始化编排 + 任务创建
   *   - VofaMonitorTask: VOFA+ JustFloat 波形监控 + 调参命令消费
-  *   - LiftTestTask:    升降上升/下降闭环测试
+  *   - MissionTask:     多子系统流程编排 (升降/底盘/横移协同, Event Group 并行)
   *
   * 依赖方向: App → Modules(lift/Emm_V5) → BSP(uart/vofa) → Core(can/usart)
   ******************************************************************************
@@ -25,6 +25,7 @@
 #include "Emm_V5_CAN.h"
 #include "chassis.h"
 #include "lateral.h"
+#include "mission.h"
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"
@@ -42,12 +43,6 @@ extern void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 extern void Emm_V5_Init(void);  /* 创建 UART5 接收信号量 (定义在 Emm_V5.c, 与 Emm_V5_CAN.h 枚举冲突故不 include 其头) */
 
 /* ---- 任务参数 ---- */
-#define LIFT_TEST_TASK_STACK_SIZE  1024               /* 堆栈(word), printf→fputc→HAL_UART_Transmit 调用链深, 加大防栈溢出 */
-#define LIFT_TEST_TASK_PRIORITY    osPriorityNormal   /* 24, 低于LiftTask(32), 不干扰闭环 */
-#define LIFT_TEST_DISTANCE         100.0f             /* 单次上升/下降位移(cm), 可调 */
-#define LIFT_TEST_HOLD_MS          1000               /* 到位后停留时间(ms) */
-#define LIFT_TEST_WAIT_TIMEOUT     8000               /* 到位等待超时(ms) */
-
 #define VOFA_TASK_STACK_SIZE       384                /* 堆栈(word), sscanf较耗栈 */
 #define VOFA_TASK_PRIORITY         osPriorityBelowNormal /* 16, 最低, 不干扰控制任务 */
 #define VOFA_TASK_PERIOD           10                 /* 波形发送周期(ms), 100Hz */
@@ -55,7 +50,6 @@ extern void Emm_V5_Init(void);  /* 创建 UART5 接收信号量 (定义在 Emm_V
 /* ---- 内部任务函数 ---- */
 static void CommandTask(void *argument);
 static void TelemetryTask(void *argument);
-static void LiftTestTask(void *argument);
 
 /**
   * @brief  应用层初始化: 子系统初始化 + 任务创建
@@ -106,15 +100,6 @@ void App_Init(void)
    *   fwd <rpm> = 前进, rev <rpm> = 后退, cstop = 缓停。 */
   Chassis_Init();
 
-  /* 升降控制任务已在 Lift_Init() 内创建 */
-  /* 创建升降上升/下降测试任务: 调用 Lift_Up/Down 验证 M2006 升降系统 */
-  const osThreadAttr_t liftTestTask_attributes = {
-    .name = "LiftTestTask",
-    .stack_size = LIFT_TEST_TASK_STACK_SIZE * 4,
-    .priority = (osPriority_t)LIFT_TEST_TASK_PRIORITY,
-  };
-  osThreadNew(LiftTestTask, NULL, &liftTestTask_attributes);
-
   /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
    * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
    * 回调分发逻辑位于 bsp/uart/uart_callback.c, 此处注册业务串口并启动接收。
@@ -128,6 +113,12 @@ void App_Init(void)
    * 需在 UART_Callback_Register(UART5,...) 之后, 确保接收回调已入分发表。 */
   Emm_V5_Init();
   Lateral_Init();
+
+  /* 多子系统流程编排(开机自动跑): 用 FreeRTOS Event Group 编排升降/底盘/横移协同。
+   * 各模块在自身任务判到位→调已注册回调→SetBits; MissionTask 每阶段下发动作(非阻塞)
+   * →WaitBits(pdWAIT_ALL)阻塞等待本阶段所有动作到位→推进。需在三个子系统 Init 之后
+   * (注册回调依赖各模块)。替换原 LiftTestTask(避免与编排任务争抢升降目标)。 */
+  Mission_Init();
 
   /* 创建命令消费任务: 阻塞等待 UART 命令队列, 分发到各模块。
    * 优先级 BelowNormal(16), 低频人工输入, 不干扰控制任务。 */
@@ -202,126 +193,3 @@ static void TelemetryTask(void *argument)
     }
 }
 
-/* ===== 升降上升/下降测试任务 ===== */
-/**
-  * @brief  升降上升/下降测试任务
-  * @note   循环执行: 上升 LIFT_TEST_DISTANCE cm → 等待到位 → 停留
-  *         → 下降 LIFT_TEST_DISTANCE cm → 等待到位 → 停留。
-  *         底层闭环由 LiftTask(20ms) + DJIMotorTask(10ms) 完成。
-  */
-static void LiftTestTask(void *argument)
-{
-  (void)argument;
-  osDelay(2000); /* 等待 M2006 反馈稳定 */
-
-  printf("[lift_test] 升降测试任务启动, 单次位移 ");
-  Log_PrintFloat1("", LIFT_TEST_DISTANCE);
-  printf("cm\r\n");
-  /* 打印电机反馈, 确认CAN通信正常 (ecd应在0-8191, C610不报温度故temp=0正常) */
-  if (lift_motor != NULL) {
-    printf("[lift_test] M2006反馈: ecd=%u speed=", (unsigned)lift_motor->measure.ecd);
-    Log_PrintFloat1("", lift_motor->measure.speed_aps);
-    printf("deg/s cur=%d temp=%dC(C610不报温度)\r\n",
-           lift_motor->measure.real_current, lift_motor->measure.temperature);
-    if (lift_motor->motor_can_instance) {
-      printf("[lift_test] CAN1 rx_counter=%lu (0=从未收到反馈)\r\n",
-             (unsigned long)lift_motor->motor_can_instance->rx_counter);
-    }
-  } else {
-    printf("[lift_test] 警告: lift_motor未初始化!\r\n");
-  }
-
-  for (;;)
-  {
-    /* 上升 */
-    printf("[lift_test] 上升 ");
-    Log_PrintFloat1("", LIFT_TEST_DISTANCE);
-    printf("cm\r\n");
-    Lift_Up(LIFT_TEST_DISTANCE);
-
-    /* 等待到位, 期间每100ms输出调试数据 */
-    {
-      uint32_t waited = 0;
-      bool arrived = false;
-      while (waited < LIFT_TEST_WAIT_TIMEOUT) {
-        float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
-        if (err <= 2.0f) { arrived = true; break; }
-        /* 每100ms打印: 目标位移 / 当前位移 / 误差 / 角速度 / 电流 / PID输出 */
-        printf("[lift] tgt=");
-        Log_PrintFloat2("", lift_status.target_displacement);
-        printf(" cur=");
-        Log_PrintFloat2("", lift_status.current_displacement);
-        printf(" err=");
-        Log_PrintFloat2("", err);
-        if (lift_motor) {
-          printf(" spd=");
-          Log_PrintFloat1("", lift_motor->measure.speed_aps);
-          printf(" cur=%d pid_ref=", lift_motor->measure.real_current);
-          Log_PrintFloat1("", lift_motor->motor_controller.pid_ref);
-        }
-        printf("\r\n");
-        osDelay(100);
-        waited += 100;
-      }
-      if (arrived) {
-        printf("[lift_test] 上升到位 位移=");
-        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-        printf("cm 速度=");
-        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
-      } else {
-        printf("[lift_test] 上升超时! 位移=");
-        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-        printf("cm 速度=");
-        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
-      }
-    }
-    osDelay(LIFT_TEST_HOLD_MS);
-
-    /* 下降 */
-    printf("[lift_test] 下降 ");
-    Log_PrintFloat1("", LIFT_TEST_DISTANCE);
-    printf("cm\r\n");
-    Lift_Down(LIFT_TEST_DISTANCE);
-
-    /* 等待到位, 期间每100ms输出调试数据 */
-    {
-      uint32_t waited = 0;
-      bool arrived = false;
-      while (waited < LIFT_TEST_WAIT_TIMEOUT) {
-        float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
-        if (err <= 2.0f) { arrived = true; break; }
-        printf("[lift] tgt=");
-        Log_PrintFloat2("", lift_status.target_displacement);
-        printf(" cur=");
-        Log_PrintFloat2("", lift_status.current_displacement);
-        printf(" err=");
-        Log_PrintFloat2("", err);
-        if (lift_motor) {
-          printf(" spd=");
-          Log_PrintFloat1("", lift_motor->measure.speed_aps);
-          printf(" cur=%d pid_ref=", lift_motor->measure.real_current);
-          Log_PrintFloat1("", lift_motor->motor_controller.pid_ref);
-        }
-        printf("\r\n");
-        osDelay(100);
-        waited += 100;
-      }
-      if (arrived) {
-        printf("[lift_test] 下降到位 位移=");
-        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-        printf("cm 速度=");
-        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
-      } else {
-        printf("[lift_test] 下降超时! 位移=");
-        Log_PrintFloat2("", Lift_GetCurrentDisplacement());
-        printf("cm 速度=");
-        Log_PrintFloat1("", lift_motor ? lift_motor->measure.speed_aps : 0.0f);
-        printf("deg/s 电流=%d\r\n", lift_motor ? lift_motor->measure.real_current : 0);
-      }
-    }
-    osDelay(LIFT_TEST_HOLD_MS);
-  }
-}

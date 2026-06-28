@@ -34,6 +34,10 @@ DJIMotorInstance *lift_motor = NULL;
 Lift_Status_t lift_status;
 osThreadId_t liftTaskHandle = NULL;
 
+/* 到位回调 (由上层 mission 注册, 升降到位时边沿触发一次, 反向解耦) */
+static void (*s_arrived_cb)(void) = NULL;
+void Lift_SetArrivedCallback(void (*cb)(void)) { s_arrived_cb = cb; }
+
 /* 私有函数声明 */
 static float Lift_AngleToDisplacement(float angle);
 static float Lift_DisplacementToAngle(float displacement);
@@ -159,6 +163,15 @@ void LiftTask(void *argument)
 
         // 控制电机
         Lift_ControlMotors();
+
+        // 到位检测(边沿触发): 运动中且位移误差≤容差, 判到位一次, 通知上层
+        if (lift_status.is_moving) {
+            float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
+            if (err <= 2.0f) {
+                lift_status.is_moving = false;
+                if (s_arrived_cb) s_arrived_cb();
+            }
+        }
 
         // 精确周期延时
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(LIFT_TASK_PERIOD));
