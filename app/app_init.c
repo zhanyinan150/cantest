@@ -26,6 +26,7 @@
 #include "chassis.h"
 #include "lateral.h"
 #include "mission.h"
+#include "laser.h"
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"
@@ -119,6 +120,12 @@ void App_Init(void)
    * →WaitBits(pdWAIT_ALL)阻塞等待本阶段所有动作到位→推进。需在三个子系统 Init 之后
    * (注册回调依赖各模块)。替换原 LiftTestTask(避免与编排任务争抢升降目标)。 */
   Mission_Init();
+
+  /* 激光 ToF 测距(双传感器): USART2(前)+USART3(后), 230400bps, IDLE 帧同步 + DMA 接收。
+   * Laser_Init 改 USART2/3 波特率为 230400, 使能 IDLE 中断 + 启动 DMA, 创建阈值监测任务。
+   * ⚠️ 调用后 servo.c 已迁至 UART4(PA0/PA1, 9600), USART3 完全归激光, 无冲突。
+   * 解析后提供查询 API(Laser_GetNearestDistance 等) + 阈值触发回调, 供 mission 接入。 */
+  Laser_Init();
 
   /* 创建命令消费任务: 阻塞等待 UART 命令队列, 分发到各模块。
    * 优先级 BelowNormal(16), 低频人工输入, 不干扰控制任务。 */

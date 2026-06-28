@@ -49,31 +49,28 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
-/* USER CODE END Variables */
-/* Definitions for defaultTask */
-osThreadId_t defaultTaskHandle;
-const osThreadAttr_t defaultTask_attributes = {
-  .name = "defaultTask",
-  .stack_size = 128 * 4,   /* 512B: 纯保活, 不再承担 App_Init */
-  .priority = (osPriority_t) osPriorityNormal,
-};
-
-/* Definitions for appInitTask: 一次性应用初始化, 完成后自删除 */
+/* appInitTask 属性: 放 USER CODE 区抗 CubeMX 重新生成覆盖 */
 osThreadId_t appInitTaskHandle;
 const osThreadAttr_t appInitTask_attributes = {
   .name = "appInitTask",
   .stack_size = 512 * 4,   /* 2KB: 跑 App_Init, printf→fputc→HAL_UART_Transmit 链深 */
   .priority = (osPriority_t) osPriorityNormal,
 };
+/* USER CODE END Variables */
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+static void AppInitTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
-static void AppInitTask(void *argument);
 
 extern void MX_USB_DEVICE_Init(void);
 void MX_FREERTOS_Init(void); /* (MISRA C 2004 rule 8.1) */
@@ -132,6 +129,8 @@ void MX_FREERTOS_Init(void) {
 /* USER CODE END Header_StartDefaultTask */
 void StartDefaultTask(void *argument)
 {
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
   /* defaultTask 纯保活: 不承担任何初始化。
    * 硬件外设初始化(含 USB)在 main.c, 应用初始化在 appInitTask, defaultTask 仅空转。
@@ -147,7 +146,7 @@ void StartDefaultTask(void *argument)
 /**
   * @brief  应用初始化任务: 调度器启动后执行 App_Init() → 自删除。
   *         USB 已在 main.c(调度器前)初始化, App_Init 首行 osDelay(500) 等 PC 枚举 CDC。
-  *         完成后 vTaskDelete 释放栈与TCB。
+  *         完成后 vTaskDelete 释放栈与TCB。放 USER CODE 区抗 CubeMX 覆盖。
   */
 static void AppInitTask(void *argument)
 {
