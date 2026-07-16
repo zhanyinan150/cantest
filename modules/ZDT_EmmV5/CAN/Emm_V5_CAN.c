@@ -25,6 +25,11 @@ static bool encoder_initialized[8] = {false}; // 是否已初始化编码器值
 extern CANInstance *can_instance[];
 extern volatile uint8_t idx;
 
+/* 帧发送日志开关(默认关): 打开后每次下发一帧都 printf 实际 CAN ID/DLC/数据,
+ * 供逻辑分析仪对照。由 Emm_V5_CAN_SetFrameLog 切换, 测试任务打开, 不影响其他模块。 */
+static bool emm_v5_frame_log_enable = false;
+void Emm_V5_CAN_SetFrameLog(bool en) { emm_v5_frame_log_enable = en; }
+
 /**
  * @brief 注册X42电机CAN实例
  * @param motor_addr 电机地址(1-8)
@@ -33,24 +38,29 @@ extern volatile uint8_t idx;
  */
 CANInstance* Emm_V5_CAN_RegisterMotor(uint8_t motor_addr, CAN_HandleTypeDef *can_handle)
 {
+    // 参数合法性检查：电机地址有效范围为1-8
     if (motor_addr < 1 || motor_addr > 8) {
         LOGERROR("电机地址无效: %d (有效范围: 1-8)", motor_addr);
         return NULL;
     }
     
+    // 计算CAN报文ID：将电机地址左移8位作为高8位，低8位由分包索引填充
     uint32_t tx_id = (motor_addr << 8); // 发送ID: 高8位是电机地址
     uint32_t rx_id = (motor_addr << 8); // 接收ID: 高8位是电机地址
-      // 创建CAN配置
+
+    // 创建CAN配置
     CAN_Init_Config_s can_config = {
-        .can_handle = can_handle,
-        .tx_id = tx_id,
-        .rx_id = rx_id,
-        .use_ext_id = 1, // 使用扩展帧
-        .can_module_callback = NULL // 暂时不使用回调函数
+        .can_handle = can_handle,        // 绑定CAN外设句柄
+        .tx_id = tx_id,                  // 发送报文ID
+        .rx_id = rx_id,                  // 接收报文ID
+        .use_ext_id = 1,                 // 使用29位扩展帧格式
+        .can_module_callback = NULL      // 暂时不使用接收回调函数
     };
-      // 注册CAN实例
+
+    // 调用底层注册接口创建CAN实例
     CANInstance *instance = CANRegister(&can_config);
     
+    // 注册失败处理：记录错误日志并返回空指针
     if (instance == NULL) {
 #if CAN_CMD_LOG_LEVEL >= 1
         LOGERROR("注册CAN实例失败，地址: 0x%02X", motor_addr);
@@ -58,6 +68,7 @@ CANInstance* Emm_V5_CAN_RegisterMotor(uint8_t motor_addr, CAN_HandleTypeDef *can
         return NULL;
     }
     
+    // 注册成功日志（需CAN_CMD_LOG_LEVEL >= 2）
 #if CAN_CMD_LOG_LEVEL >= 2
     LOGINFO("成功注册CAN实例，地址: 0x%02X, TX_ID: 0x%03X, RX_ID: 0x%03X", 
             motor_addr, tx_id, rx_id);
@@ -197,6 +208,18 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
         }
         
         CANSetDLC(target, frame_len);
+
+        /* 帧发送日志: 打印即将下发的真实 CAN 帧(ID+DLC+数据), 供逻辑分析仪对照。
+         * 多帧命令的 packet_index 体现在 ID 低字节 (can_id = (addr<<8)+pkt)。 */
+        if (emm_v5_frame_log_enable)
+        {
+            printf("[CAN TX] addr=%u ID=0x%06lX DLC=%u pkt=%u DATA:",
+                   (unsigned)addr, (unsigned long)can_id,
+                   (unsigned)frame_len, (unsigned)packet_index);
+            for (uint8_t i = 0; i < frame_len; i++)
+                printf(" %02X", target->tx_buff[i]);
+            printf("\r\n");
+        }
 
         if (!CANTransmit(target, CAN_TX_TIMEOUT_MS))
         {
