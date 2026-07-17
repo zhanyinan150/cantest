@@ -62,6 +62,12 @@ void App_Init(void)
   osDelay(500); /* Wait for USB enumeration */
 
 
+  /* ===== CAN2-only 测试模式 =====
+   * 只跑 CAN2 步进测试(MotorTest_Init)。停用 CAN1 升降: 不注册 M2006、不建
+   * LiftTask/DJIMotorTask、不启动 CAN1, 让总线与 CPU 上只剩 motor_test,
+   * 逻辑分析仪接 CAN2(PB13) 时不受 CAN1 每 10ms 发送干扰。
+   * 恢复升降: 把下面的 #if 0 改回 #if 1。 */
+#if 0
   /* 升降系统初始化：注册 M2006 电机 (CANRegister 内部会配置 FIFO0 过滤器接收 0x201 反馈帧)。
    * 注意: bsp_can 的 CANServiceInit() 不会调用 HAL_CAN_Start(),
    * 因此需在 Lift_Init() 配置完过滤器之后手动启动 CAN1 并使能接收中断,
@@ -88,6 +94,7 @@ void App_Init(void)
              (unsigned long)lift_motor->motor_can_instance->rx_counter);
     }
   }
+#endif
 
   /* 步进电机(Emm_V5)初始化: CAN2 扩展帧通信。
    * ===== 测试模式: 用 MotorTest_Init 替代原有步进初始化 =====
@@ -113,7 +120,7 @@ void App_Init(void)
   /* Chassis_Init(); */  /* 停用: 底盘地址 1,2 与 Y 轴冲突 */
 #endif
 
-  /* 升降控制任务已在 Lift_Init() 内创建 */
+  /* CAN2-only 测试模式: 升降(Lift_Init)已停用, 不创建 LiftTask/DJIMotorTask */
 
   /* 创建上电自动执行任务: 不依赖串口命令, 上电后自动跑预设动作序列。
    * 修改 MotorAutoTask 内的动作即可改行为。 */
