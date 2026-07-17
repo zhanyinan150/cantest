@@ -348,7 +348,7 @@ void Emm_V5_CAN_Read_Sys_Params(uint8_t addr, SysParams_t s)
   * @brief    修改开环/闭环控制模式
   * @param    addr     ：电机地址
   * @param    svF      ：是否存储标志，false为不存储，true为存储
-  * @param    ctrl_mode：控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
+  * @param    ctrl_mode：控制模式（ZDT第二代协议, 见X42S手册5.6.7）: 0=开环模式, 1=闭环模式(默认01)。注意: 老 Emm_V5.0 为 0/1/2/3(2=闭环), 第二代仅 0/1, 勿传 2
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_CAN_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
@@ -360,7 +360,7 @@ void Emm_V5_CAN_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
   cmd[1] =  0x46;                       // 功能码
   cmd[2] =  0x69;                       // 辅助码
   cmd[3] =  svF;                        // 是否存储标志，false为不存储，true为存储
-  cmd[4] =  ctrl_mode;                  // 控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
+  cmd[4] =  ctrl_mode;                  // 控制模式(ZDT第二代, 手册5.6.7): 0=开环, 1=闭环(默认01); 勿传老V5.0的2
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令

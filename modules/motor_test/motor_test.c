@@ -66,7 +66,7 @@ void MotorTest_Init(void)
      *    电机收到命令不转, 多数是堵转保护未清或模式不对 */
     Emm_V5_CAN_Reset_Clog_Pro(MOTOR_TEST_ADDR);               /* 清除堵转保护 */
     osDelay(50);
-    Emm_V5_CAN_Modify_Ctrl_Mode(MOTOR_TEST_ADDR, true, 2);    /* 存储为闭环模式 */
+    Emm_V5_CAN_Modify_Ctrl_Mode(MOTOR_TEST_ADDR, true, 1);    /* 存储为闭环模式 (ZDT第二代: 0=开环 1=闭环, 手册5.6.7; 勿传老V5.0的2) */
     osDelay(50);
     Emm_V5_CAN_En_Control(MOTOR_TEST_ADDR, true, false);      /* 使能电机 */
     osDelay(100);
