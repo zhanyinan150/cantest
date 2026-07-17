@@ -190,23 +190,50 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
     }
 #endif
 
-    uint8_t packet_index = 0;
-    uint16_t data_offset = 1;  // 跳过cmd[0]（地址），后续数据从cmd[1]开始
+    /* ===== 拆帧发送 (ZDT 第二代 CAN 协议, 见 X42S 手册 4.2.1) =====
+     * 扩展帧 ID = (addr<<8) | packet, packet 从 0 计数。
+     * 关键规则: "每包数据的第一个字节为功能码"。
+     *   - payload(cmd[1..len-1], 即 功能码+数据+校验) <= 8 字节: 单帧, 直接发, packet=0;
+     *   - payload > 8 字节: 拆包, 每包 = 功能码 cmd[1] + 后续最多 7 字节数据(从 cmd[2] 起切)。
+     * 修复: 原实现只按 8 字节裸切, 第 2 包起漏发功能码, 致位置命令(0xFD, 12字节payload)
+     *       等多帧命令拼包失败 -> 电机拒收/不动。单帧命令行为不变。 */
+    uint16_t payload_len  = len - 1;          /* 去掉地址后的长度 (功能码+数据+校验) */
+    uint8_t  func_code    = cmd[1];           /* 功能码, 多帧时每包都要带 */
+    uint8_t  multi        = (payload_len > 8);/* >8 字节需拆包 */
+    uint8_t  packet_index = 0;
+    uint16_t data_offset  = multi ? 2 : 1;    /* 多帧: 跳过地址+功能码; 单帧: 只跳地址 */
 
     while (data_offset < len)
     {
-        uint8_t frame_len = (len - data_offset > 8) ? 8 : (len - data_offset);
-        uint32_t can_id = (addr << 8) + ((len - 1 > 8) ? packet_index : 0);
+        uint8_t frame_len;
 
-        memcpy(target->tx_buff, &cmd[data_offset], frame_len);
-        
+        /* 组本帧数据到 tx_buff */
+        if (multi)
+        {
+            /* 多帧: 首字节为功能码, 其后最多 7 字节数据 */
+            uint8_t chunk = (len - data_offset > 7) ? 7 : (uint8_t)(len - data_offset);
+            target->tx_buff[0] = func_code;
+            memcpy(&target->tx_buff[1], &cmd[data_offset], chunk);
+            frame_len = chunk + 1;
+            data_offset += chunk;
+        }
+        else
+        {
+            /* 单帧: 数据即 cmd[1..len-1] */
+            frame_len = (uint8_t)payload_len;
+            memcpy(target->tx_buff, &cmd[data_offset], frame_len);
+            data_offset += frame_len;
+        }
+
+        uint32_t can_id = (addr << 8) + packet_index;
+
         // 设置CAN ID (根据use_ext_id设置StdId或ExtId)
         if (target->use_ext_id) {
             target->txconf.ExtId = can_id;
         } else {
             target->txconf.StdId = can_id;
         }
-        
+
         CANSetDLC(target, frame_len);
 
         /* 帧发送日志: 打印即将下发的真实 CAN 帧(ID+DLC+数据), 供逻辑分析仪对照。
@@ -229,11 +256,10 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
             return false;
         }
 
-        data_offset += frame_len;
         packet_index++;
 
-        if (len - 1 > 8)
-            osDelay(CAN_SEND_DELAY_MS);
+        if (multi)
+            osDelay(CAN_SEND_DELAY_MS);  /* 多帧包间延时 */
     }
 
 #if CAN_CMD_LOG_LEVEL >= 2
