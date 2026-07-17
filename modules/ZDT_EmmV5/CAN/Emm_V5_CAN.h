@@ -53,6 +53,15 @@ void Emm_V5_CAN_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF); /
 void Emm_V5_CAN_Origin_Interrupt(uint8_t addr); // 强制中断并退出回零
 bool Emm_V5_CAN_Init(uint8_t *motor_ids, uint8_t motor_count);
 bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len);
+
+/**
+  * @brief  打开/关闭 "每帧发送日志" (USART1 打印实际下发的 CAN 帧)
+  * @param  en true=使能, false=关闭(默认)
+  * @note   用于逻辑分析仪对照: 打开后, 每次 EmmV5_CAN_SendCmd 下发一帧都会
+  *         printf "[CAN TX] addr=.. ID=.. DLC=.. DATA: .."。
+  *         默认关闭, 不影响 chassis 等其他模块的常规运行。
+  */
+void Emm_V5_CAN_SetFrameLog(bool en);
 int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr);
 
 /* 电机状态标志位掩码 (S_FLAG=0x3A 响应字节, 详见 Emm_V5 说明书 6.3.4) */

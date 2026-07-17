@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd \"c:/Users/lanan/Desktop/楠哥代码/cantest-main \\(2\\)/cantest-main\" && find . -type f \\\\\\( -name \"*.c\" -o -name \"*.h\" -o -name \"*.s\" -o -name \"*.uvprojx\" -o -name \"*.ioc\" -o -name \"Makefile\" \\\\\\) | head -100)",
+      "Read(//c/Users/lanan/Desktop/楠哥代码/cantest-main \\\\\\(2\\\\\\)/cantest-main/**)",
+      "Bash(cd \"c:/Users/lanan/Desktop/楠哥代码/cantest-main \\(2\\)/cantest-main\" && ls -la && echo \"---TOP LEVEL---\" && find . -maxdepth 2 -type d)",
+      "Bash(cd \"c:/Users/lanan/Desktop/楠哥代码/cantest-main \\(2\\)/cantest-main\" && echo \"===app===\" && ls -la app/ && echo \"===modules===\" && find modules -type f && echo \"===bsp===\" && find bsp -type f && echo \"===Core/Src===\" && ls Core/Src/ && echo \"===硬件开发===\" && find 硬件开发 -type f 2>/dev/null | head -30)",
+      "Bash(grep -v \"//\")"
+    ]
+  }
+}
