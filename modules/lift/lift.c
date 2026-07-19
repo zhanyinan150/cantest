@@ -164,12 +164,14 @@ void LiftTask(void *argument)
         // 控制电机
         Lift_ControlMotors();
 
-        // 到位检测(边沿触发): 运动中且位移误差≤容差, 判到位一次, 通知上层
+        // 到位检测(边沿触发): is_moving 在 Lift_SetTarget 时置 true, 到位后置 false。
+        // 连续 PID 闭环下电机始终被维持, 用 is_moving 做边沿, 保证一次运动只回调一次,
+        // 不会因到位后的小抖动反复触发 (到位后 is_moving=false, 抖动不会再置 true)。
         if (lift_status.is_moving) {
             float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
-            if (err <= 2.0f) {
+            if (err <= 2.0f) {  // 位移误差进入 2cm 容差带 → 判到位
                 lift_status.is_moving = false;
-                if (s_arrived_cb) s_arrived_cb();
+                if (s_arrived_cb) s_arrived_cb();  // 通知 mission → SetBits(EVT_LIFT)
             }
         }
 

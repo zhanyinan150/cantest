@@ -42,27 +42,36 @@ static float Lateral_DirSign(void);
 static uint8_t Lateral_DirForSigned(float signed_eff);  /* 由"有效空间有符号量"算物理 dir(0=CW,1=CCW) */
 static uint8_t lateral_telemetry_getter(float *out, uint8_t max);
 
-/* ===== 换算与方向辅助 ===== */
+/* ===== 换算与方向辅助 =====
+ * 方向模型: 编码器累计值 accumulated, CW(dir=0)时增加, CCW(dir=1)时减少。
+ * 但电机接线可能反向, 故引入"有效空间位移" eff = s × accumulated (s=DirSign=±1)。
+ *   - LATERAL_DIR_INVERT=0: s=+1, eff 与 accumulated 同号 (接线正向)
+ *   - LATERAL_DIR_INVERT=1: s=-1, eff 与 accumulated 反号 (接线反向, 用宏补偿)
+ * 对外统一约定: eff>0 = 正向横移。这样接线反了只改宏, 代码不动。 */
 
+/* s: 有效空间与编码器的符号关系 (+1 正接 / -1 反接) */
 static float Lateral_DirSign(void)
 {
     return LATERAL_DIR_INVERT ? -1.0f : 1.0f;
 }
 
+/* 脉冲数 → 位移(cm): 脉冲/每转脉冲 × 同步轮周长 */
 static float Lateral_PulsesToCm(int32_t pulses)
 {
     return (float)pulses / LATERAL_PULSE_PER_REV * LATERAL_PULLEY_CIRCUMFERENCE_CM;
 }
 
+/* 位移(cm) → 脉冲数: cm/周长 × 每转脉冲 */
 static int32_t Lateral_CmToPulses(float cm)
 {
     return (int32_t)(cm / LATERAL_PULLEY_CIRCUMFERENCE_CM * LATERAL_PULSE_PER_REV);
 }
 
-/* 由"有效空间有符号量" (正=正向横移) 推物理方向 dir。
- * 推导: eff = s*accumulated (s=±1), CW(dir0)→accumulated+。
- *   欲使 eff 增加 (signed_eff>0): invert0 时 dir0, invert1 时 dir1。
- *   故 dir = (s*signed_eff >= 0) ? 0 : 1。 */
+/* 由"有效空间有符号量" signed_eff (正=想正向横移) 推物理方向 dir(0=CW,1=CCW)。
+ * 要让 eff=s×accumulated 增大(signed_eff>0):
+ *   s=+1(正接): 需 accumulated 增大 → CW → dir=0
+ *   s=-1(反接): 需 accumulated 减小 → CCW → dir=1
+ * 合并: dir = (s×signed_eff ≥ 0) ? 0 : 1。signed_eff<0 时同理对称。 */
 static uint8_t Lateral_DirForSigned(float signed_eff)
 {
     return (Lateral_DirSign() * signed_eff >= 0.0f) ? 0 : 1;
@@ -118,11 +127,14 @@ void LateralTask(void *argument)
     uint32_t pos_start = 0;
 
     for (;;) {
-        /* 1. 读编码器 → 当前位移 (有效空间) */
+        /* 1. 读编码器 → 当前位移。enc 是编码器累计脉冲, 乘 DirSign 转到"有效空间"
+         *    (补偿接线方向), 再换算 cm。读编码器是阻塞 Q&A (发3字节→DMA收5字节→信号量),
+         *    约35ms, 故任务周期设 50ms 留余量。 */
         int32_t enc = Emm_V5_Read_Encoder(LATERAL_MOTOR_ADDR);
         lateral_status.current_displacement = Lateral_DirSign() * Lateral_PulsesToCm(enc);
 
-        /* 2. 消费意图标志 (优先级: home > enable > stop > 模式状态机) */
+        /* 2. 消费意图标志 (优先级: home > enable > stop > 模式状态机)。
+         *    VOFA 命令只置这些标志, 实际总线操作全在本任务做 → 单任务独占总线, 无并发。 */
         if (lateral_status.home_request) {
             Emm_V5_Reset_CurPos_To_Zero(LATERAL_MOTOR_ADDR);
             Emm_V5_Reset_Encoder_Accumulation(LATERAL_MOTOR_ADDR);
@@ -159,38 +171,44 @@ void LateralTask(void *argument)
             break;
         }
         case LATERAL_MODE_POSITION: {
-            /* 新目标/重定向: 发送相对位置命令 */
+            /* 位置模式: 发"相对当前位置"的脉冲数让电机内部闭环走到目标。
+             * Emm_V5_Pos_Control 的 clk 是相对脉冲数, raF=false 表示相对运动。 */
             if (lateral_status.pos_pending) {
+                /* 新目标/重定向: 算出还需走多少 delta, 转成脉冲下发 */
                 float delta = lateral_status.target_displacement - lateral_status.current_displacement;
                 int32_t clk = Lateral_CmToPulses(delta);
                 if (clk == 0) {
+                    /* 目标就在当前位置(脉冲分辨率内), 直接到位 */
                     lateral_status.arrived = true;
                     lateral_status.mode = LATERAL_MODE_IDLE;
                     lateral_status.pos_pending = false;
                     if (s_arrived_cb) s_arrived_cb();
                 } else {
                     uint8_t dir = Lateral_DirForSigned(delta);
+                    /* clk 取绝对值, 方向由 dir 单独给; acc=0 由驱动器内部 ramp */
                     Emm_V5_Pos_Control(LATERAL_MOTOR_ADDR, dir,
                                        LATERAL_DEFAULT_VEL_RPM, LATERAL_DEFAULT_ACC,
                                        (uint32_t)(clk < 0 ? -clk : clk), false, false);
                     lateral_status.pos_pending = false;
-                    pos_start = HAL_GetTick();
+                    pos_start = HAL_GetTick();  /* 记录下发时刻, 供超时判定 */
                 }
             } else {
-                /* 到位/超时判定 */
+                /* 命令已下发, 轮询编码器判到位/超时 */
                 float err = fabsf(lateral_status.current_displacement - lateral_status.target_displacement);
                 if (err <= LATERAL_POS_TOLERANCE_CM) {
+                    /* 位移误差进入容差带 → 到位 */
                     lateral_status.arrived = true;
                     lateral_status.mode = LATERAL_MODE_IDLE;
                     printf("[lateral] 到位 disp=%.2fcm\r\n", lateral_status.current_displacement);
                     if (s_arrived_cb) s_arrived_cb();
                 } else if ((HAL_GetTick() - pos_start) > LATERAL_POS_TIMEOUT_MS) {
+                    /* 超时未到位: 急停 + 通知上层(超时也回调, 避免 mission 的 WaitBits 死等) */
                     lateral_status.arrived = false;
                     lateral_status.mode = LATERAL_MODE_IDLE;
                     Emm_V5_Stop_Now(LATERAL_MOTOR_ADDR, false);
                     printf("[lateral] 位置超时 disp=%.2f tgt=%.2f\r\n",
                            lateral_status.current_displacement, lateral_status.target_displacement);
-                    if (s_arrived_cb) s_arrived_cb();  /* 超时也通知, 避免编排任务死等 */
+                    if (s_arrived_cb) s_arrived_cb();
                 }
             }
             break;

@@ -416,20 +416,22 @@ int32_t Emm_V5_Read_Encoder(uint8_t addr)
         if (xSemaphoreTake(usart6_rx_sem, pdMS_TO_TICKS(30)) == pdTRUE) {
             // 校验地址 + 功能码
             if (rx_buf[0] == addr && rx_buf[1] == 0x31) {
-                // 编码器值 = 高8位 << 8 | 低8位
+                // 单圈编码器值 (0~65535), 高字节在前
                 raw_value = (int32_t)((rx_buf[2] << 8) | rx_buf[3]);
 
-                // 多圈累计: 处理周期性清零与正反向溢出
+                // 多圈累计: 单圈值在 0~65535 间循环, 需检测跨零点回绕, 累计真实行程。
+                // diff = 本周期值 - 上周期值, 正常转动 |diff| < 半圈(32768)。
                 int32_t diff = raw_value - last_raw_encoder[idx];
 
                 if (last_raw_encoder[idx] > ENCODER_HALF && raw_value < ENCODER_HALF/2) {
-                    // 检测到清零周期, 累加上一个最大值
+                    // 驱动器周期性清零: 上次接近满量程, 这次突变为小值 (非正常回绕),
+                    // 按正向跨零处理: 补上 (满量程-上次值) + 本次值
                     accumulated_encoder[idx] += (ENCODER_MAX - last_raw_encoder[idx]) + raw_value;
                 } else if (diff < -ENCODER_HALF) {
-                    // 正向溢出
+                    // 正向回绕: 顺时针跨过 65535→0, 实际前进 (65536+diff) 步
                     accumulated_encoder[idx] += ENCODER_MAX + diff;
                 } else if (diff > ENCODER_HALF) {
-                    // 反向溢出
+                    // 反向回绕: 逆时针跨过 0→65535, 实际后退 (65536-diff) 步
                     accumulated_encoder[idx] -= ENCODER_MAX - diff;
                 } else {
                     accumulated_encoder[idx] += diff;

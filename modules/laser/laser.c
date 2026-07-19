@@ -44,13 +44,17 @@ static LaserSide side_from_huart(UART_HandleTypeDef *huart)
     return LASER_SIDE_COUNT;
 }
 
-/* 解析单帧到指定侧的 LaserFrame。帧完整性已由调用方校验。 */
+/* 解析单帧到指定侧的 LaserFrame。帧完整性已由调用方校验。
+ * 在 USART IDLE 中断上下文执行(非任务), 故只做纯内存操作, 不含 printf/阻塞。
+ * 每个测量点 15 字节, 布局: distance(2) noise(2) peak(4) confidence(1) intg(4) reftof(2),
+ * 全部小端(低字节在前), 与上位机 Python 解析脚本逐字节对应。 */
 static void parse_frame(LaserSide side, const uint8_t *frame)
 {
     LaserFrame *f = &s_frames[side];
     for (uint8_t p = 0; p < LASER_POINT_COUNT; p++) {
+        /* 第 p 个测量点在帧中的起始偏移 = 头部10字节 + p×15 */
         uint16_t i = LASER_FRAME_HEAD + p * LASER_POINT_LEN;
-        /* 小端解析 (与 Python 一致: data[i]=低字节, data[i+1]=高字节) */
+        /* 小端解析: 低字节 | (高字节 << 8), 多字节字段同理逐字节拼 */
         f->points[p].distance_mm = (uint16_t)(frame[i] | (frame[i + 1] << 8));
         f->points[p].noise       = (uint16_t)(frame[i + 2] | (frame[i + 3] << 8));
         f->points[p].peak        = (uint32_t)frame[i + 4] | ((uint32_t)frame[i + 5] << 8) |
@@ -78,11 +82,12 @@ void Laser_OnIdle(UART_HandleTypeDef *huart)
     /* 清 IDLE 标志 (读 SR 再读 DR, 或用 HAL 宏) */
     __HAL_UART_CLEAR_IDLEFLAG(huart);
 
-    /* 停止当前 DMA, 读取实际接收字节数 */
+    /* 停止当前 DMA。NDTR 是 DMA 剩余未传输计数, "申请长度 - 剩余" = 实际收到字节数 */
     HAL_UART_DMAStop(huart);
     uint16_t rx_len = LASER_FRAME_LEN - __HAL_DMA_GET_COUNTER(huart->hdmarx);
 
-    /* 帧校验: 长度==195 且首字节==0xAA。不满足则丢弃(帧同步会自动恢复) */
+    /* 帧校验: 长度==195 且首字节==0xAA。不满足则丢弃(帧同步会自动恢复:
+     * 残帧/错位帧被跳过, 下一帧的 0xAA 起始符会重新对齐)。 */
     if (rx_len == LASER_FRAME_LEN && s_rx_buf[side][0] == LASER_START_BYTE) {
         parse_frame(side, s_rx_buf[side]);
     } else {
@@ -113,6 +118,7 @@ uint16_t Laser_GetNearestDistance(LaserSide side)
     uint16_t nearest = 0xFFFF;
     for (uint8_t i = 0; i < LASER_POINT_COUNT; i++) {
         uint16_t d = s_frames[side].points[i].distance_mm;
+        /* distance==0 表示该点无效(无回波/超量程), 排除避免误判为"最近" */
         if (d != 0 && d < nearest) nearest = d;
     }
     return nearest;
@@ -124,7 +130,7 @@ uint16_t Laser_GetAvgDistance(LaserSide side)
     uint32_t sum = 0, cnt = 0;
     for (uint8_t i = 0; i < LASER_POINT_COUNT; i++) {
         uint16_t d = s_frames[side].points[i].distance_mm;
-        if (d != 0) { sum += d; cnt++; }
+        if (d != 0) { sum += d; cnt++; }  /* 同样排除无效点(0) */
     }
     if (cnt == 0) return 0xFFFF;
     return (uint16_t)(sum / cnt);

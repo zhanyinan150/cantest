@@ -303,16 +303,19 @@ static void ChassisTask(void *argument)
         if (chassis.enabled)
             chassis_step();
 
-        /* 位置模式到位检测 (非阻塞): 位置运动进行中时, 周期查 S_FLAG,
-         * 到位/堵转则清 s_pos_active 并回调通知上层。 */
+        /* 位置模式到位检测 (非阻塞): 位置运动进行中时, 周期查双轮 S_FLAG。
+         * S_FLAG(0x3A) 位含义: &0x02=到位 &0x04=堵转 &0x08=堵转保护。
+         * 到位或堵转都清 s_pos_active 并回调通知上层 mission (SetBits),
+         * 让 WaitBits 解除阻塞 —— 堵转也必须回调, 否则 mission 会死等到超时。 */
         if (s_pos_active) {
             int32_t fL = Emm_V5_CAN_Read_Flag(CHASSIS_LEFT_ADDR);
             int32_t fR = Emm_V5_CAN_Read_Flag(CHASSIS_RIGHT_ADDR);
-            if (fL >= 0 && fR >= 0) {
+            if (fL >= 0 && fR >= 0) {  /* 读取失败(<0)则本周期跳过, 下周期重试 */
                 if ((fL & EMM_FLAG_STALL) || (fR & EMM_FLAG_STALL) ||
                     (fL & EMM_FLAG_STALL_PROT) || (fR & EMM_FLAG_STALL_PROT)) {
                     s_pos_active = false;
                     printf("[chassis] 位置堵转 L=0x%X R=0x%X\r\n", (unsigned)fL, (unsigned)fR);
+                    if (s_arrived_cb) s_arrived_cb();  /* 堵转也通知, 避免编排死等 */
                 } else if ((fL & EMM_FLAG_ARRIVED) && (fR & EMM_FLAG_ARRIVED)) {
                     s_pos_active = false;
                     printf("[chassis] 位置到位\r\n");

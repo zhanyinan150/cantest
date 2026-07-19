@@ -59,6 +59,20 @@ void App_Init(void)
 {
   osDelay(500); /* Wait for USB enumeration */
 
+  /* ===== 子系统初始化顺序 (依赖链自上而下) =====
+   * 1. Lift_Init      : M2006 电机注册 CAN1 + 创建 LiftTask/DJIMotorTask
+   * 2. CAN1 启动       : Lift_Init 配好过滤器后才能 start + 使能接收中断
+   * 3. Emm_V5_CAN_Init: 底盘双步进轮注册 CAN2
+   * 4. CAN2 启动       : 同上
+   * 5. Chassis_Init    : 使能双轮 + 创建 ChassisTask
+   * 6. UART5 回调注册  : 横移 Emm_V5 的 DMA 接收回调入分发表
+   * 7. Emm_V5_Init     : 创建 UART5 DMA 接收信号量 (首次 Read_Encoder 前必须)
+   * 8. Lateral_Init    : 启动 UART5 DMA + 创建 LateralTask
+   * 9. Laser_Init      : 启动 USART2/3 DMA + IDLE 帧同步 + 创建 LaserMonitorTask
+   * 10. Mission_Init   : 创建 Event Group + 注册底盘/横移到位回调 + 创建主流程状态机任务
+   * 11. CommandTask    : VOFA/CDC 命令消费任务 (含 "go" 触发主流程)
+   * 顺序关键: 回调注册必须在各模块 Init 之后, 信号量/总线必须在首次使用前就绪,
+   *           Laser_Init 必须在 Mission_Init 之前 (主流程首状态用激光定位)。 */
 
   /* 升降系统初始化：注册 M2006 电机 (CANRegister 内部会配置 FIFO0 过滤器接收 0x201 反馈帧)。
    * 注意: bsp_can 的 CANServiceInit() 不会调用 HAL_CAN_Start(),
@@ -115,17 +129,19 @@ void App_Init(void)
   Emm_V5_Init();
   Lateral_Init();
 
-  /* 多子系统流程编排(开机自动跑): 用 FreeRTOS Event Group 编排升降/底盘/横移协同。
-   * 各模块在自身任务判到位→调已注册回调→SetBits; MissionTask 每阶段下发动作(非阻塞)
-   * →WaitBits(pdWAIT_ALL)阻塞等待本阶段所有动作到位→推进。需在三个子系统 Init 之后
-   * (注册回调依赖各模块)。替换原 LiftTestTask(避免与编排任务争抢升降目标)。 */
-  Mission_Init();
-
   /* 激光 ToF 测距(双传感器): USART2(前)+USART3(后), 230400bps, IDLE 帧同步 + DMA 接收。
-   * Laser_Init 改 USART2/3 波特率为 230400, 使能 IDLE 中断 + 启动 DMA, 创建阈值监测任务。
+   * Laser_Init 使能 IDLE 中断 + 启动 DMA, 创建阈值监测任务。
    * ⚠️ 调用后 servo.c 已迁至 UART4(PA0/PA1, 9600), USART3 完全归激光, 无冲突。
-   * 解析后提供查询 API(Laser_GetNearestDistance 等) + 阈值触发回调, 供 mission 接入。 */
+   * 解析后提供查询 API(Laser_GetNearestDistance 等) + 阈值触发回调, 供 mission 接入。
+   * 需在 Mission_Init 之前 (mission 主流程首状态要用激光定位)。 */
   Laser_Init();
+
+  /* 主流程状态机编排(开机自动跑): 激光定位→等CDC(go命令)→底盘+横移并行到点1
+   * →舵机动作(固定延时)→底盘+横移并行到点2→循环。用 Event Group 做底盘+横移并行
+   * 同步(各模块到位回调 SetBits, WaitBits(pdWAIT_ALL) 等两者到位), CDC 触发用任务通知
+   * (xTaskNotifyGive/ulTaskNotifyTake, 零轮询)。需在各子系统 + Laser_Init 之后
+   * (注册回调 + 激光定位依赖)。 */
+  Mission_Init();
 
   /* 创建命令消费任务: 阻塞等待 UART 命令队列, 分发到各模块。
    * 优先级 BelowNormal(16), 低频人工输入, 不干扰控制任务。 */

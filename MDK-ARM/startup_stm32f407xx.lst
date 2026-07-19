@@ -839,10 +839,17 @@ M32F4xx/Include -I../Drivers/CMSIS/Include -I../bsp/dwt -I../bsp/log -I../bsp/p
 rintf -I../bsp/vofa -I../bsp/can -I../bsp/cmd -I../bsp/telemetry -I../bsp/uart 
 -I../modules -I../modules/PID -I../modules/ADRC -I../modules/dji_motor -I../mod
 ules/ZDT_EmmV5 -I../modules/ZDT_EmmV5/CAN -I../modules/ZDT_X42 -I../modules/ser
-vo -I../modules/lift -I../modules/chassis -I.\RTE\_cantest -IE:\ARM\CMSIS\5.0.1
-\CMSIS\Include --predefine="__MICROLIB SETA 1" --predefine="__UVISION_VERSION S
-ETA 524" --predefine="_RTE_ SETA 1" --predefine="STM32F407xx SETA 1" --list=sta
-rtup_stm32f407xx.lst startup_stm32f407xx.s
+vo -I../modules/lift -I../modules/chassis -I../modules/lateral -I../modules/mis
+sion -I../modules/laser -I.\RTE\_cantest -IE:\ARM\CMSIS\5.0.1\CMSIS\Include --p
+redefine="__MICROLIB SETA 1" --predefine="__UVISION_VERSION SETA 524" --predefi
+ne="_RTE_ SETA 1" --predefine="STM32F407xx SETA 1" --list=startup_stm32f407xx.l
+
+
+
+ARM Macro Assembler    Page 14 
+
+
+st startup_stm32f407xx.s
 
 
 

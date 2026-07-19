@@ -196,7 +196,11 @@ static void DecodeDJIMotor(CANInstance *_instance)
                             CURRENT_SMOOTH_COEF * (float)((int16_t)(rxbuff[4] << 8 | rxbuff[5]));
     measure->temperature = rxbuff[6];
 
-    // 多圈角度计算,前提是假设两次采样间电机转过的角度小于180°,自己画个图就清楚计算过程了
+    // 多圈角度累计: ecd 是单圈值(0~8191, 对应0~360°), 在边界处会回绕。
+    // 假设两次采样间转动 <180°(即 <4096 码盘刻度), 据此判断回绕方向:
+    //   - ecd 突减 >4096: 实际是正向跨过 8191→0 (前进过零), 圈数+1
+    //   - ecd 突增 >4096: 实际是反向跨过 0→8191 (后退过零), 圈数-1
+    // total_angle = 圈数×360 + 单圈角度, 用于 lift 的多圈位移闭环, 避免边界突跃。
     if (measure->ecd - measure->last_ecd > 4096)
         measure->total_round--;
     else if (measure->ecd - measure->last_ecd < -4096)
