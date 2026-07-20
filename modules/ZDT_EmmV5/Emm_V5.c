@@ -1,31 +1,34 @@
 #include "stm32f4xx_hal.h"
 #include "Emm_V5.h"
-#include "cmsis_os.h" // FreeRTOS API
-#include "semphr.h"
-#include "bsp_log.h"
-#include "bsp_dwt.h"
+#include "usart.h"
+#include "cmsis_os2.h"   /* osDelay: 发送后让 DMA 完成 + gState 复位, 让出 CPU */
+
+uint8_t Speed;
+uint8_t motor_flag=1;
+uint8_t cmd[3]; // S_ENCL指令
+uint8_t rx_buf[5]; // 返回5字节：地址 + 0x31 + 高8位 + 低8位 + 校验字节
+
 // 函数前向声明，避免隐式声明警告
 void Emm_V5_Set_Encoder_Zero(uint8_t id);
-void Emm_V5_Get_All_Encoders(int32_t encoder[4]);
-int32_t Emm_V5_Read_Encoder(uint8_t addr);
 
-static SemaphoreHandle_t usart6_rx_sem = NULL;
-
-// 编码器累计值，用于处理周期性清零问题
-static int32_t accumulated_encoder[4] = {0};
-static int32_t last_raw_encoder[4] = {0};
-static const int32_t ENCODER_MAX = 65535;  // 编码器一圈的最大值
-static const int32_t ENCODER_HALF = 32768; // 编码器最大值的一半，用于判断溢出
+//static volatile uint8_t usart6_rx_complete = 0; // 接收完成标志
+// 编码器累积值，用于处理周期性清零问题
+int32_t current_encoder=0;
+int32_t sum_encoder=0;
+int32_t last_encoder=0;
+int16_t diff=0;
+ int32_t ENCODER_MAX = 65535;  // 编码器一圈的最大值
+ int32_t ENCODER_HALF = 32768; // 编码器最大值的一半，用于判断溢出
 
 // 添加软件零点偏移变量
-static int32_t encoder_zero_offset[4] = {0};
+//static int32_t encoder_zero_offset[4] = {0};
 
 /**********************************************************
 ***	Emm_V5.0步进闭环控制例程
 ***	编写作者：ZHANGDATOU
-***	技术支持：张大头闭环技术
+***	技术支持：张大头闭环伺服
 ***	淘宝店铺：https://zhangdatou.taobao.com
-***	CSDN博客：https://blog.csdn.net/zhangdatou666
+***	CSDN博客：http s://blog.csdn.net/zhangdatou666
 ***	qq交流群：262438510
 **********************************************************/
 
@@ -36,7 +39,7 @@ static int32_t encoder_zero_offset[4] = {0};
   */
 void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -44,8 +47,10 @@ void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr)
   cmd[2] =  0x6D;                       // 辅助码
   cmd[3] =  0x6B;                       // 校验字节
 
-  // 发送命令
-	HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 4);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,4);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -55,7 +60,7 @@ void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr)
   */
 void Emm_V5_Reset_Clog_Pro(uint8_t addr)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -63,8 +68,10 @@ void Emm_V5_Reset_Clog_Pro(uint8_t addr)
   cmd[2] =  0x52;                       // 辅助码
   cmd[3] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 4);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,4);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -76,7 +83,7 @@ void Emm_V5_Reset_Clog_Pro(uint8_t addr)
 void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t1 s)
 {
   uint8_t i = 0;
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[i] = addr; ++i;                   // 地址
@@ -102,8 +109,10 @@ void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t1 s)
 
   cmd[i] = 0x6B; ++i;                   // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, i);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,i);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -115,7 +124,7 @@ void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t1 s)
   */
 void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -125,8 +134,10 @@ void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
   cmd[4] =  ctrl_mode;                  // 控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
   cmd[5] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 6);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,6);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -136,9 +147,9 @@ void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
   * @param    snF   ：多机同步标志 ，false为不启用，true为启用
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
-void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
+ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -148,8 +159,10 @@ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
   cmd[4] =  snF;                        // 多机同步运动标志
   cmd[5] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 6);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,6);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -163,9 +176,10 @@ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
   */
 void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
-  // 装载命令
+  // 装载命令01 FE 98 00 6B
+//01 F6 00 00 01 00 00 6B
   cmd[0] =  addr;                       // 地址
   cmd[1] =  0xF6;                       // 功能码
   cmd[2] =  dir;                        // 方向
@@ -175,10 +189,10 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   cmd[6] =  snF;                        // 多机同步运动标志
   cmd[7] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 8);
-  osDelay(3);
-
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,8);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -194,7 +208,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   */
 void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0]  =  addr;                      // 地址
@@ -211,7 +225,10 @@ void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, ui
   cmd[11] =  snF;                       // 多机同步运动标志，false为不启用，true为启用
   cmd[12] =  0x6B;                      // 校验字节
 
-  HAL_UART_Transmit(&huart5, (uint8_t *)cmd, 13,50);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,13);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -222,7 +239,7 @@ void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, ui
   */
 void Emm_V5_Stop_Now(uint8_t addr, bool snF)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -231,8 +248,10 @@ void Emm_V5_Stop_Now(uint8_t addr, bool snF)
   cmd[3] =  snF;                        // 多机同步运动标志
   cmd[4] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 5);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -242,7 +261,7 @@ void Emm_V5_Stop_Now(uint8_t addr, bool snF)
   */
 void Emm_V5_Synchronous_motion(uint8_t addr)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -250,8 +269,10 @@ void Emm_V5_Synchronous_motion(uint8_t addr)
   cmd[2] =  0x66;                       // 辅助码
   cmd[3] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 4);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,4);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -262,7 +283,7 @@ void Emm_V5_Synchronous_motion(uint8_t addr)
   */
 void Emm_V5_Origin_Set_O(uint8_t addr, bool svF)
 {
-   uint8_t cmd[16] = {0};
+   static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -271,8 +292,10 @@ void Emm_V5_Origin_Set_O(uint8_t addr, bool svF)
   cmd[3] =  svF;                        // 是否存储标志，false为不存储，true为存储
   cmd[4] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 5);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -291,7 +314,7 @@ void Emm_V5_Origin_Set_O(uint8_t addr, bool svF)
   */
 void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t o_dir, uint16_t o_vel, uint32_t o_tm, uint16_t sl_vel, uint16_t sl_ma, uint16_t sl_ms, bool potF)
 {
-  uint8_t cmd[32] = {0};
+  static uint8_t cmd[32] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -315,8 +338,10 @@ void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t
   cmd[18] =  potF;                      // 上电自动触发回零，false为不使能，true为使能
   cmd[19] =  0x6B;                      // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 20);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,20);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -328,7 +353,7 @@ void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t
   */
 void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -337,8 +362,10 @@ void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF)
   cmd[3] =  snF;                        // 多机同步运动标志，false为不启用，true为启用
   cmd[4] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 5);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
 
 /**
@@ -348,7 +375,7 @@ void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF)
   */
 void Emm_V5_Origin_Interrupt(uint8_t addr)
 {
-  uint8_t cmd[16] = {0};
+  static uint8_t cmd[16] = {0};
 
   // 装载命令
   cmd[0] =  addr;                       // 地址
@@ -356,171 +383,107 @@ void Emm_V5_Origin_Interrupt(uint8_t addr)
   cmd[2] =  0x48;                       // 辅助码
   cmd[3] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 5);
+  // 发送命令 (UART5 DMA)
+  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
+  osDelay(20);                          // 等 DMA 完成 + gState 复位
 }
-
-/**
-  * @brief    初始化 UART5 接收信号量 + 清零编码器累计 (不预读总线)
-  * @note     仅创建信号量并清零累计数组; 实际编码器读取由调用方按需进行。
-  *           信号量名 usart6_rx_sem 为历史命名残留, 实际服务 UART5。
-  *           必须在首次 HAL_UART_Receive_DMA(&huart5,...) 之前调用, 否则回调
-  *           Emm_V5_UART_RxCpltCallback 因 sem==NULL 而失效。
-  */
-void Emm_V5_Init(void)
+//2,4和1,3为同边||右前2后4，1方向前进||左前1后3，0方向前进
+void Motor_VelStraight(uint8_t Speed,uint8_t acc)
 {
-    if (usart6_rx_sem == NULL) {
-        usart6_rx_sem = xSemaphoreCreateBinary();
-    }
-    for (int i = 0; i < 4; i++) {
-        accumulated_encoder[i] = 0;
-        last_raw_encoder[i] = 0;
-        encoder_zero_offset[i] = 0;
-    }
+	Emm_V5_Vel_Control(1,0,Speed,acc,true);
+	  HAL_Delay(10);
+	Emm_V5_Vel_Control(2,1,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(3,0,Speed,acc,true);
+		HAL_Delay(10);
+
+	Emm_V5_Vel_Control(4,1,Speed,acc,true);
+		HAL_Delay(10);
+Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
+
 }
-
-/**
-  * @brief    DMA接收回调
-  * @param    huart  ：UART句柄
-  */
-void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+void Motor_VelTurnBack(uint8_t Speed,uint8_t acc)
 {
-    if (huart->Instance == UART5) {
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        if (usart6_rx_sem) {
-            xSemaphoreGiveFromISR(usart6_rx_sem, &xHigherPriorityTaskWoken);
-            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-        }
-    }
+	Emm_V5_Vel_Control(1,1,Speed,acc,true);
+	  HAL_Delay(10);
+	Emm_V5_Vel_Control(2,0,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(3,1,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(4,0,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
 }
-
-// 读取单个电机编码器累计值（多圈, 含回绕处理）。阻塞 Q&A: 发3字节→DMA收5字节→信号量同步。
-int32_t Emm_V5_Read_Encoder(uint8_t addr)
+void Motor_VelTurnLeftAround(uint8_t Speed,uint8_t acc)
 {
-    uint8_t cmd[3] = {addr, 0x31, 0x6B}; // S_ENCL指令
-    uint8_t rx_buf[5] = {0}; // 返回5字节：地址 + 0x31 + 高8位 + 低8位 + 校验字节
-    int32_t raw_value = 0;
-    int idx = addr - 1;
+	Emm_V5_Vel_Control(1,1,Speed,acc,true);
+	  HAL_Delay(10);
+	Emm_V5_Vel_Control(2,1,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(3,1,Speed,acc,true);
+		HAL_Delay(10);
 
-    // 先清空缓冲区和状态, 避免残留数据
-    __HAL_UART_FLUSH_DRREGISTER(&huart5);
-    HAL_UART_DMAStop(&huart5);
+	Emm_V5_Vel_Control(4,1,Speed,acc,true);
+		HAL_Delay(10);
+Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
 
-    // 发送读取编码器命令 (阻塞, 短超时)
-    HAL_UART_Transmit(&huart5, cmd, 3, 5);
-
-    // 启动DMA接收，返回5字节数据
-    HAL_UART_Receive_DMA(&huart5, rx_buf, 5);
-
-    if (usart6_rx_sem) {
-        if (xSemaphoreTake(usart6_rx_sem, pdMS_TO_TICKS(30)) == pdTRUE) {
-            // 校验地址 + 功能码
-            if (rx_buf[0] == addr && rx_buf[1] == 0x31) {
-                // 编码器值 = 高8位 << 8 | 低8位
-                raw_value = (int32_t)((rx_buf[2] << 8) | rx_buf[3]);
-
-                // 多圈累计: 处理周期性清零与正反向溢出
-                int32_t diff = raw_value - last_raw_encoder[idx];
-
-                if (last_raw_encoder[idx] > ENCODER_HALF && raw_value < ENCODER_HALF/2) {
-                    // 检测到清零周期, 累加上一个最大值
-                    accumulated_encoder[idx] += (ENCODER_MAX - last_raw_encoder[idx]) + raw_value;
-                } else if (diff < -ENCODER_HALF) {
-                    // 正向溢出
-                    accumulated_encoder[idx] += ENCODER_MAX + diff;
-                } else if (diff > ENCODER_HALF) {
-                    // 反向溢出
-                    accumulated_encoder[idx] -= ENCODER_MAX - diff;
-                } else {
-                    accumulated_encoder[idx] += diff;
-                }
-
-                last_raw_encoder[idx] = raw_value;
-                return accumulated_encoder[idx]; // 返回累计值
-            }
-            // 响应帧不匹配: 静默返回上次累计值
-        }
-        // 接收超时: 静默返回上次累计值
-    }
-
-    return accumulated_encoder[idx]; // 读取失败也返回上次累计值
 }
-
-/**
-  * @brief    快速读取1-4号电机编码器累计值
-  * @note     针对某个电机不可用的情况进行了优化
-  * @param    encoder 存储编码器累计值的数组，大小为4
-  */
-void Emm_V5_Get_All_Encoders(int32_t encoder[4])
+void Motor_VelTurnRightAround(uint8_t Speed,uint8_t acc)
 {
-    static uint8_t debug_count = 0;
-    bool debug_log = (++debug_count % 20) == 0; // 每20次输出一次日志
-    if (debug_log) {
-        LOGINFO("读取编码器...");
-    }
+	Emm_V5_Vel_Control(1,0,Speed,acc,true);
+	  HAL_Delay(10);
+	Emm_V5_Vel_Control(2,0,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(3,0,Speed,acc,true);
+		HAL_Delay(10);
 
-    // 先清空串口缓冲区
-    __HAL_UART_FLUSH_DRREGISTER(&huart5);
-    HAL_UART_DMAStop(&huart5);
-    osDelay(5); // 减少等待时间
+	Emm_V5_Vel_Control(4,0,Speed,acc,true);
+		HAL_Delay(10);
+Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
 
-    // 读取1、2、3、4号电机
-    int32_t raw_encoder[4];
-    raw_encoder[0] = Emm_V5_Read_Encoder(1);
-    raw_encoder[1] = Emm_V5_Read_Encoder(2);
-    raw_encoder[2] = Emm_V5_Read_Encoder(3);
-    raw_encoder[3] = Emm_V5_Read_Encoder(4);
 
-    // 应用零点偏移
-    for (int i = 0; i < 4; i++) {
-        encoder[i] = raw_encoder[i] - encoder_zero_offset[i];
-    }
-
-    if (debug_log) {
-        LOGINFO("编码器原始值: [%d, %d, %d, %d]", raw_encoder[0], raw_encoder[1], raw_encoder[2], raw_encoder[3]);
-        LOGINFO("编码器偏移后结果: [%d, %d, %d, %d]", encoder[0], encoder[1], encoder[2], encoder[3]);
-    }
 }
-
-/**
-  * @brief    重置编码器累计计数
-  * @param    id 电机ID，1-4，如果为0则重置所有电机
-  */
-void Emm_V5_Reset_Encoder_Accumulation(uint8_t id)
+void Motor_Velturnleft(uint8_t Speed,uint8_t acc)
 {
-    if (id == 0) {
-        // 重置所有电机的累计值
-        for (int i = 0; i < 4; i++) {
-            accumulated_encoder[i] = 0;
-            last_raw_encoder[i] = 0;
-        }
-    } else if (id <= 4) {
-        // 重置指定电机的累计值
-        accumulated_encoder[id-1] = 0;
-        last_raw_encoder[id-1] = 0;
-    }
+	Emm_V5_Vel_Control(1,1,Speed,acc,true);
+	  HAL_Delay(10);
+	Emm_V5_Vel_Control(2,1,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(3,0,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(4,0,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
 }
-
-/**
-  * @brief    设置编码器软件零点（不改变原始编码器值，只设置偏移量）
-  * @param    id 电机ID，1-4，如果为0则设置所有电机
-  */
-void Emm_V5_Set_Encoder_Zero(uint8_t id)
+void Motor_Velturnright(uint8_t Speed,uint8_t acc)
 {
-    int32_t current_values[4] = {0};
-
-    // 先获取当前的编码器值
-    Emm_V5_Get_All_Encoders(current_values);
-
-    if (id == 0) {
-        // 设置所有电机的零点偏移
-        for (int i = 0; i < 4; i++) {
-            encoder_zero_offset[i] = current_values[i];
-            LOGINFO("电机%d设置零点偏移: %d", i+1, encoder_zero_offset[i]);
-        }
-    } else if (id <= 4) {
-        // 设置指定电机的零点偏移
-        encoder_zero_offset[id-1] = current_values[id-1];
-        LOGINFO("电机%d设置零点偏移: %d", id, encoder_zero_offset[id-1]);
-    }
+	Emm_V5_Vel_Control(1,0,Speed,acc,true);
+	  HAL_Delay(10);
+	Emm_V5_Vel_Control(2,0,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(3,1,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Vel_Control(4,1,Speed,acc,true);
+		HAL_Delay(10);
+	Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
+}
+void Motor_SetStop(void)
+{
+	Emm_V5_Stop_Now(1,true );
+	  HAL_Delay(10);
+	Emm_V5_Stop_Now(2,true);
+		HAL_Delay(10);
+	Emm_V5_Stop_Now(3,true);
+		HAL_Delay(10);
+	Emm_V5_Stop_Now(4,true);
+		HAL_Delay(50);
+	Emm_V5_Synchronous_motion(0);
+    HAL_Delay(100);
 }

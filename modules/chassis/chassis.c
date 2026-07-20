@@ -51,10 +51,6 @@ static struct {
 
 static osThreadId_t s_mtest_task = NULL;  /* mtest 自动循环任务句柄, estop/mstop 共享 */
 
-/* 到位回调 (由上层 mission 注册, 位置模式到位时调用, 反向解耦) */
-static void (*s_arrived_cb)(void) = NULL;
-static bool s_pos_active = false;  /* 位置模式进行中标志 (ChassisTask 据此轮询 S_FLAG) */
-
 /* ---- 内部函数前向声明 ---- */
 static void    ChassisTask(void *argument);
 static void    chassis_send(float vel_rpm);
@@ -231,21 +227,8 @@ int Chassis_WaitArrive(void)
   */
 int Chassis_MoveDistance(float distance_cm, uint16_t vel_rpm)
 {
-    if (Chassis_MoveDistanceAsync(distance_cm, vel_rpm) != 0)
-        return -1;
-    return Chassis_WaitArrive();
-}
-
-/**
-  * @brief  位置模式移动指定距离(非阻塞: 仅下发命令, 不等待到位)
-  * @note   到位检测由 ChassisTask 周期查 S_FLAG 完成, 到位时调 s_arrived_cb 通知上层。
-  *         适合编排任务并行等待多模块到位 (配合 Event Group)。
-  * @retval 0 已下发, -1 参数非法(距离0)
-  */
-int Chassis_MoveDistanceAsync(float distance_cm, uint16_t vel_rpm)
-{
     if (distance_cm == 0.0f)
-        return -1;
+        return 0;
     if (vel_rpm == 0)
         vel_rpm = CHASSIS_POS_VEL_RPM;
     if (vel_rpm > 5000)
@@ -264,25 +247,20 @@ int Chassis_MoveDistanceAsync(float distance_cm, uint16_t vel_rpm)
     if (distance_cm >= 0.0f) { dirL = 0; dirR = 1; }
     else                     { dirL = 1; dirR = 0; }
 
-    printf("[chassis] 位置模式(异步) %+.1fcm = %lu脉冲, vel=%u rpm\r\n",
-           (double)distance_cm, (unsigned long)clk, vel_rpm);
+    printf("[chassis] 位置模式 %+.1fcm = %lu脉冲, vel=%u rpm acc=%d\r\n",
+           (double)distance_cm, (unsigned long)clk, vel_rpm, CHASSIS_POS_ACC);
 
-    /* 4. 多机同步: 两轮 snF=true 预存运动, 广播同步启动消除航向漂移 */
+    /* 4. 多机同步: 两轮 snF=true 预存运动(不立即执行), 再广播 Synchronous_motion(0)
+     *    触发同步启动, 消除左轮早发的航向漂移 (详见 Emm_V5 说明书 6.5)。 */
     Emm_V5_CAN_Pos_Control(CHASSIS_LEFT_ADDR,  dirL, vel_rpm, CHASSIS_POS_ACC, clk, false, true);
     Emm_V5_CAN_Pos_Control(CHASSIS_RIGHT_ADDR, dirR, vel_rpm, CHASSIS_POS_ACC, clk, false, true);
-    Emm_V5_CAN_Synchronous_motion(0);
+    Emm_V5_CAN_Synchronous_motion(0);  /* 广播地址 0, 触发所有预存运动的电机同步启动 */
 
-    s_pos_active = true;  /* 标记位置运动进行中, ChassisTask 据此轮询到位 */
-    return 0;
-}
-
-/**
-  * @brief  注册位置模式到位回调 (上层 mission 用于事件驱动编排)
-  * @note   回调在 ChassisTask 上下文执行, 应简短(如 xEventGroupSetBits)。
-  */
-void Chassis_SetArrivedCallback(void (*cb)(void))
-{
-    s_arrived_cb = cb;
+    /* 5. 阻塞等待到位: 轮询 S_FLAG 到位/堵转标志 (替代原估算时间等待) */
+    int ret = Chassis_WaitArrive();
+    if (ret == 0) printf("[chassis] 位置模式到位\r\n");
+    else          printf("[chassis] 位置模式未完成\r\n");
+    return ret;
 }
 
 
@@ -291,7 +269,7 @@ void Chassis_SetArrivedCallback(void (*cb)(void))
 /* ================================================================== */
 
 /**
-  * @brief  底盘控制任务: 周期推进 ramp 状态机 + 位置模式到位检测
+  * @brief  底盘控制任务: 周期推进 ramp 状态机
   */
 static void ChassisTask(void *argument)
 {
@@ -302,25 +280,6 @@ static void ChassisTask(void *argument)
     for (;;) {
         if (chassis.enabled)
             chassis_step();
-
-        /* 位置模式到位检测 (非阻塞): 位置运动进行中时, 周期查 S_FLAG,
-         * 到位/堵转则清 s_pos_active 并回调通知上层。 */
-        if (s_pos_active) {
-            int32_t fL = Emm_V5_CAN_Read_Flag(CHASSIS_LEFT_ADDR);
-            int32_t fR = Emm_V5_CAN_Read_Flag(CHASSIS_RIGHT_ADDR);
-            if (fL >= 0 && fR >= 0) {
-                if ((fL & EMM_FLAG_STALL) || (fR & EMM_FLAG_STALL) ||
-                    (fL & EMM_FLAG_STALL_PROT) || (fR & EMM_FLAG_STALL_PROT)) {
-                    s_pos_active = false;
-                    printf("[chassis] 位置堵转 L=0x%X R=0x%X\r\n", (unsigned)fL, (unsigned)fR);
-                } else if ((fL & EMM_FLAG_ARRIVED) && (fR & EMM_FLAG_ARRIVED)) {
-                    s_pos_active = false;
-                    printf("[chassis] 位置到位\r\n");
-                    if (s_arrived_cb) s_arrived_cb();
-                }
-            }
-        }
-
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(CHASSIS_TASK_PERIOD_MS));
     }
 }

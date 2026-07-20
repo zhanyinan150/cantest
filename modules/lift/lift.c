@@ -34,10 +34,6 @@ DJIMotorInstance *lift_motor = NULL;
 Lift_Status_t lift_status;
 osThreadId_t liftTaskHandle = NULL;
 
-/* 到位回调 (由上层 mission 注册, 升降到位时边沿触发一次, 反向解耦) */
-static void (*s_arrived_cb)(void) = NULL;
-void Lift_SetArrivedCallback(void (*cb)(void)) { s_arrived_cb = cb; }
-
 /* 私有函数声明 */
 static float Lift_AngleToDisplacement(float angle);
 static float Lift_DisplacementToAngle(float displacement);
@@ -109,7 +105,7 @@ int Lift_Init(void)
         .controller_setting_init_config = {
             .close_loop_type = ANGLE_AND_SPEED_LOOP,  /* 速度环 + 位置环串级 */
             .outer_loop_type = ANGLE_LOOP,               /* 外环为位置环 */
-            .motor_reverse_flag = MOTOR_DIRECTION_NORMAL,  /* 电机正方向=位移增大(下降), 无需反转 */
+            .motor_reverse_flag = MOTOR_DIRECTION_REVERSE,
             .feedback_reverse_flag = FEEDBACK_DIRECTION_NORMAL,
             .angle_feedback_source = MOTOR_FEED,
             .speed_feedback_source = MOTOR_FEED,
@@ -164,15 +160,6 @@ void LiftTask(void *argument)
         // 控制电机
         Lift_ControlMotors();
 
-        // 到位检测(边沿触发): 运动中且位移误差≤容差, 判到位一次, 通知上层
-        if (lift_status.is_moving) {
-            float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
-            if (err <= 2.0f) {
-                lift_status.is_moving = false;
-                if (s_arrived_cb) s_arrived_cb();
-            }
-        }
-
         // 精确周期延时
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(LIFT_TASK_PERIOD));
     }
@@ -211,7 +198,7 @@ static void Lift_ControlMotors(void)
  */
 int Lift_Up(float displacement)
 {
-    Lift_SetTarget(lift_status.target_displacement - displacement);
+    Lift_SetTarget(lift_status.target_displacement + displacement);
     return 0;
 }
 
@@ -223,7 +210,7 @@ int Lift_Up(float displacement)
  */
 int Lift_Down(float displacement)
 {
-    Lift_SetTarget(lift_status.target_displacement + displacement);
+    Lift_SetTarget(lift_status.target_displacement - displacement);
     return 0;
 }
 

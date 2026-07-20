@@ -5,12 +5,11 @@
 * LSC系列舵机控制板二次开发示例
 *******************************************************************************/
 #include "stm32f4xx.h"
-#include "servo.h"
+#include "LobotServoController.h"
 #include <stdarg.h>
 #include <string.h>
 #include <usart.h>
 #include "stdbool.h"
-#include "cmsis_os2.h"
 
 
 #define GET_LOW_BYTE(A) ((uint8_t)(A))
@@ -18,7 +17,7 @@
 #define GET_HIGH_BYTE(A) ((uint8_t)((A) >> 8))
 //宏函数 获得A的高八位
 
-bool isUartRxCompleted = false;
+extern bool isUartRxCompleted;
 extern  __IO uint8_t ServoFlag;
 
 uint8_t LobotTxBuf[128];  //发送缓存
@@ -28,7 +27,6 @@ uint16_t batteryVolt;
 /*********************************************************************************
  * Function:  moveServo
  * Description： 控制单个舵机转动
- * 
  * Parameters:   sevoID:舵机ID，Position:目标位置,Time:转动时间
                     舵机ID取值:0<=舵机ID<=31,Time取值: Time > 0
  * Return:       无返回
@@ -48,8 +46,7 @@ void moveServo(uint8_t servoID, uint16_t Position, uint16_t Time)
     LobotTxBuf[7] = servoID;                  //舵机ID
     LobotTxBuf[8] = GET_LOW_BYTE(Position);   //取得目标位置的低八位
     LobotTxBuf[9] = GET_HIGH_BYTE(Position);  //取得目标位置的高八位
-
-    HAL_UART_Transmit(&huart3, LobotTxBuf, 10, 0xFFFF);
+HAL_UART_Transmit(&huart6,LobotTxBuf,10,0XFFFF);
 }
 
 /*********************************************************************************
@@ -75,19 +72,19 @@ void moveServosByArray(LobotServo servos[], uint8_t Num, uint16_t Time)
     LobotTxBuf[5] = GET_LOW_BYTE(Time);                //取得时间的低八位
     LobotTxBuf[6] = GET_HIGH_BYTE(Time);               //取得时间的高八位
 
-    for (i = 0; i < Num; i++) {                        //循环填充舵机ID和对应目标位置        
+    for (i = 0; i < Num; i++) {                        //循环填充舵机ID和对应目标位置
         LobotTxBuf[index++] = servos[i].ID;              //填充舵机ID
         LobotTxBuf[index++] = GET_LOW_BYTE(servos[i].Position); //填充目标位置低八位
         LobotTxBuf[index++] = GET_HIGH_BYTE(servos[i].Position);//填充目标位置高八位
     }
 
-    HAL_UART_Transmit(&huart3, LobotTxBuf, LobotTxBuf[2] + 2, 0xFFFF);             //发送
+
 }
 
 /*********************************************************************************
  * Function:  moveServos
  * Description： 控制多个舵机转动
- * Parameters:   Num:舵机个数,Time:转动时间,...:舵机ID,转动角，舵机ID,转动角度 如此类推
+ * Parameters:   Num:舵机个数,Time:转动时间,...:舵机ID,转动角，舵机I ,转动角度 如此类推
  * Return:       无返回
  * Others:
  **********************************************************************************/
@@ -112,14 +109,14 @@ void moveServos(uint8_t Num, uint16_t Time, ...)
     for (i = 0; i < Num; i++) {//从可变参数中取得并循环填充舵机ID和对应目标位置
         temp = va_arg(arg_ptr, int);//可参数中取得舵机ID
         LobotTxBuf[index++] = GET_LOW_BYTE(((uint16_t)temp));
-        temp = va_arg(arg_ptr, int);  //可变参数中取得对应目标位置        
+        temp = va_arg(arg_ptr, int);  //可变参数中取得对应目标位置
         LobotTxBuf[index++] = GET_LOW_BYTE(((uint16_t)temp)); //填充目标位置低八位
         LobotTxBuf[index++] = GET_HIGH_BYTE(temp);//填充目标位置高八位
     }
 
     va_end(arg_ptr);  //置空arg_ptr
+    HAL_UART_Transmit(&huart6,LobotTxBuf,7+3*Num,0XFFFF);
 
-    HAL_UART_Transmit(&huart3, LobotTxBuf, LobotTxBuf[2] + 2, 0xFFFF);    //发送
 }
 
 
@@ -130,17 +127,20 @@ void moveServos(uint8_t Num, uint16_t Time, ...)
  * Return:       无返回
  * Others:       Times = 0 时无限循环
  **********************************************************************************/
-void runActionGroup(uint8_t numOfAction, uint16_t Times)
+void 1runActionGroup(uint8_t numOfAction, uint16_t Times)
 {
     LobotTxBuf[0] = LobotTxBuf[1] = FRAME_HEADER;  //填充帧头
-    LobotTxBuf[2] = 5;                      //数据长度，数据帧除帧头部分数据字节数，此命令固定为5    
+    LobotTxBuf[2] = 5;                      //数据长度，数据帧除帧头部分数据字节数，此命令固定为5
     LobotTxBuf[3] = CMD_ACTION_GROUP_RUN;   //填充运行动作组命令
     LobotTxBuf[4] = numOfAction;            //填充要运行的动作组号
     LobotTxBuf[5] = GET_LOW_BYTE(Times);    //取得要运行次数的低八位
     LobotTxBuf[6] = GET_HIGH_BYTE(Times);   //取得要运行次数的高八位
 
-    HAL_UART_Transmit(&huart3, LobotTxBuf, 7, 0xFFFF);
-    osDelay(400); // 确保数据发送完成
+    HAL_UART_Transmit(&huart6,LobotTxBuf,7,0XFFFF);
+
+//	while(ServoFlag==0);
+//	ServoFlag=0;
+    //uartWriteBuf(LobotTxBuf, 7);            //发送
 }
 
 /*********************************************************************************
@@ -151,12 +151,13 @@ void runActionGroup(uint8_t numOfAction, uint16_t Times)
  * Others:
  **********************************************************************************/
 void stopActionGroup(void)
-{    LobotTxBuf[0] = FRAME_HEADER;     //填充帧头
+{
+    LobotTxBuf[0] = FRAME_HEADER;     //填充帧头
     LobotTxBuf[1] = FRAME_HEADER;
     LobotTxBuf[2] = 2;                //数据长度，数据帧除帧头部分数据字节数，此命令固定为2
     LobotTxBuf[3] = CMD_ACTION_GROUP_STOP;   //填充停止运行动作组命令
 
-    HAL_UART_Transmit(&huart3, LobotTxBuf, 4, 0xFFFF);      //发送
+
 }
 /*********************************************************************************
  * Function:  setActionGroupSpeed
@@ -168,13 +169,13 @@ void stopActionGroup(void)
 void setActionGroupSpeed(uint8_t numOfAction, uint16_t Speed)
 {
     LobotTxBuf[0] = LobotTxBuf[1] = FRAME_HEADER;   //填充帧头
-    LobotTxBuf[2] = 5;                       //数据长度，数据帧除帧头部分数据字节数，此命令固定为5    
+    LobotTxBuf[2] = 5;                       //数据长度，数据帧除帧头部分数据字节数，此命令固定为5
     LobotTxBuf[3] = CMD_ACTION_GROUP_SPEED;  //填充设置动作组速度命令
     LobotTxBuf[4] = numOfAction;             //填充要设置的动作组号
     LobotTxBuf[5] = GET_LOW_BYTE(Speed);     //获得目标速度的低八位
     LobotTxBuf[6] = GET_HIGH_BYTE(Speed);    //获得目标熟读的高八位
 
-    HAL_UART_Transmit(&huart3, LobotTxBuf, 7, 0xFFFF);             //发送
+
 }
 
 /*********************************************************************************
@@ -198,25 +199,12 @@ void setAllActionGroupSpeed(uint16_t Speed)
  **********************************************************************************/
 void getBatteryVoltage(void)
 {
-//	uint16_t Voltage = 0;    LobotTxBuf[0] = FRAME_HEADER;  //填充帧头
+//	uint16_t Voltage = 0;
+    LobotTxBuf[0] = FRAME_HEADER;  //填充帧头
     LobotTxBuf[1] = FRAME_HEADER;
     LobotTxBuf[2] = 2;             //数据长度，数据帧除帧头部分数据字节数，此命令固定为2
     LobotTxBuf[3] = CMD_GET_BATTERY_VOLTAGE;  //填充获取电池电压命令
 
-    HAL_UART_Transmit(&huart3, LobotTxBuf, 4, 0xFFFF);   //发送
+
 }
 
-void receiveHandle()
-{
-    //可以根据二次开发手册添加其他指令
-    if (isUartRxCompleted) {
-        isUartRxCompleted = false;
-        switch (LobotRxBuf[3]) {
-        case CMD_GET_BATTERY_VOLTAGE: //获取电压
-            batteryVolt = (((uint16_t)(LobotRxBuf[5])) << 8) | (LobotRxBuf[4]);
-            break;
-        default:
-            break;
-        }
-    }
-}
