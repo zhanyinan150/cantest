@@ -4,6 +4,27 @@
   * @brief   底盘差速控制模块 - 双 Emm_V5 步进轮 (CAN2)
   ******************************************************************************
   * @attention
+  * ===== 底盘电机设置 (硬件配置, 勿随意改动) =====
+  * 电机型号   : Emm_V5 步进驱动器 (ZDT), 速度模式
+  * CAN 总线   : CAN2, 扩展帧 (use_ext_id=1)
+  * 驱动器地址 : 左=1, 右=2 (拨码开关, 与 CHASSIS_LEFT_ADDR/RIGHT_ADDR 一致)
+  * 发送 ExtId : 左(addr=1) 0x00000100, 右(addr=2) 0x00000200  (ExtId = addr<<8)
+  * 反馈 ID    : 同发送 ID (Emm_V5 收发同 ID, 靠数据字节区分命令/响应)
+  * 方向 dir   : 0=CW(顺时针), 1=CCW(逆时针)
+  *   前进     : 左 CW(dir=0) + 右 CCW(dir=1)
+  *   后退     : 左 CCW(dir=1) + 右 CW(dir=0)
+  * 使能       : Chassis_Init 调 Emm_V5_CAN_En_Control(addr, true) 使能双轮
+  * CAN 波特率 : 1 Mbps (CAN2: APB1=42MHz, Prescaler=3, BS1=10TQ, BS2=3TQ, SJW=1TQ;
+  *              波特率 = 42M / (3*(1+10+3)) = 1Mbps, 见 can.c MX_CAN2_Init)
+  * ---- Emm_V5 驱动参数 (来自代码与 mech_params.h, 详见 ZDT 手册) ----
+  * 速度范围   : 0~5000 RPM (速度模式), 固件限幅 CHASSIS_MAX_RPM=3000
+  * 加速度 acc : 0~255, 0=直接启动 (chassis 传 0, 加减速由固件 ramp 控制)
+  * 位置模式   : 电机轴直驱轮子(无减速), 每转脉冲 65536 (编码器4倍频)
+  *              脉冲数 clk = (距离cm / 轮周长cm) * 65536
+  * 轮径/周长  : 轮径 18cm, 周长 = π*18 ≈ 56.55cm (mech_params.h)
+  * 多机同步   : snF=true 预存位置命令 + 广播 Emm_V5_CAN_Synchronous_motion(0) 同步启动
+  * 状态标志   : S_FLAG(0x3A)  &0x01=使能 &0x02=到位 &0x04=堵转 &0x08=堵转保护
+  *
   * 两个步进轮挂 CAN2 (Emm_V5 驱动), 非大疆电机, 不经过 DJIMotorTask。
   * 命令直接经 Emm_V5_CAN_Vel_Control() 下发。
   *
@@ -60,6 +81,14 @@ int Chassis_Init(void);
   *                    换向/减速也用此时长从当前转速平滑过渡到新目标。
   */
 void Chassis_SetVelocity(float target_rpm, uint32_t ramp_ms);
+
+/**
+  * @brief  设置底盘目标速度(立即, 无S形ramp)
+  * @param  target_rpm 目标转速(RPM, 带符号: +前进 -后退), 自动限幅到 ±CHASSIS_MAX_RPM
+  * @note   越过余弦S形ramp, 直接把当前转速设为目标并立即下发。停止须配合 Chassis_StopNow
+  *         (立即停), 不要用 Chassis_Stop (会 S 形减速)。用于不需要平滑加速的场景。
+  */
+void Chassis_SetVelocityImmediate(float target_rpm);
 
 /**
   * @brief  底盘缓停止(按上次 ramp 时长 S 形减速到 0)

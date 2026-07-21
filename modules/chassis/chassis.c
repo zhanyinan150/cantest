@@ -105,7 +105,7 @@ static void chassis_step(void)
                 printf("[chassis] 停止\r\n");
             } else {
                 chassis.state = CHASSIS_CRUISE;
-                printf("[chassis] 匀速 %+.0f rpm\r\n", (double)chassis.vel_target);
+                printf("[chassis] 匀速 %+d rpm\r\n", (int)chassis.vel_target);
             }
         }
         else
@@ -152,14 +152,37 @@ void Chassis_SetVelocity(float target_rpm, uint32_t ramp_ms)
         return;
     }
 
-    printf("[chassis] ramp %+.0f → %+.0f rpm / %lums\r\n",
-           (double)chassis.vel_current, (double)target_rpm, (unsigned long)ramp_ms);
+    printf("[chassis] ramp %+d → %+d rpm / %lums\r\n",
+           (int)chassis.vel_current, (int)target_rpm, (unsigned long)ramp_ms);
 
     chassis.vel_start   = chassis.vel_current;  /* 从当前转速平滑过渡, 支持运行中改目标/换向 */
     chassis.vel_target  = target_rpm;
     chassis.ramp_ms     = ramp_ms;
     chassis.ramp_elapsed = 0;
     chassis.state       = CHASSIS_RAMPING;
+}
+
+/**
+  * @brief  设置底盘目标速度(立即, 无S形ramp)
+  * @note   直接 vel_current=vel_target=target, state=CRUISE 并下发, 越过 ramp 状态机。
+  *         停止用 Chassis_StopNow, 不要用 Chassis_Stop(会 S 形减速)。
+  */
+void Chassis_SetVelocityImmediate(float target_rpm)
+{
+    if (target_rpm >  (float)CHASSIS_MAX_RPM) target_rpm =  (float)CHASSIS_MAX_RPM;
+    if (target_rpm < -(float)CHASSIS_MAX_RPM) target_rpm = -(float)CHASSIS_MAX_RPM;
+
+    chassis.vel_current  = target_rpm;
+    chassis.vel_target   = target_rpm;
+    chassis.last_ramp_ms = 0;
+    if (target_rpm == 0.0f) {
+        chassis.state = CHASSIS_IDLE;
+        chassis.idle_need_zero = true;
+    } else {
+        chassis.state = CHASSIS_CRUISE;
+    }
+    chassis_send(target_rpm);  /* 立即下发, 不经 ramp 状态机 */
+    printf("[chassis] 立即设速 %+d rpm\r\n", (int)target_rpm);
 }
 
 /**
@@ -264,8 +287,8 @@ int Chassis_MoveDistanceAsync(float distance_cm, uint16_t vel_rpm)
     if (distance_cm >= 0.0f) { dirL = 0; dirR = 1; }
     else                     { dirL = 1; dirR = 0; }
 
-    printf("[chassis] 位置模式(异步) %+.1fcm = %lu脉冲, vel=%u rpm\r\n",
-           (double)distance_cm, (unsigned long)clk, vel_rpm);
+    printf("[chassis] 位置模式(异步) %+dcm = %lu脉冲, vel=%u rpm\r\n",
+           (int)distance_cm, (unsigned long)clk, vel_rpm);
 
     /* 4. 多机同步: 两轮 snF=true 预存运动, 广播同步启动消除航向漂移 */
     Emm_V5_CAN_Pos_Control(CHASSIS_LEFT_ADDR,  dirL, vel_rpm, CHASSIS_POS_ACC, clk, false, true);
