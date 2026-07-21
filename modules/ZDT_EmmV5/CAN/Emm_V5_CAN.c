@@ -15,7 +15,7 @@
 // 编码器相关常量
 #define ENCODER_MAX     65536  // 编码器最大值
 #define ENCODER_HALF    32768  // 编码器最大值的一半
-#define CAN_CMD_LOG_LEVEL 0
+#define CAN_CMD_LOG_LEVEL 1
 // 编码器累计值计算相关变量
 static int32_t last_raw_encoder[8] = {0};     // 上一次读取的原始编码器值
 static int32_t accumulated_encoder[8] = {0};  // 累积编码器值
@@ -34,7 +34,7 @@ extern volatile uint8_t idx;
 CANInstance* Emm_V5_CAN_RegisterMotor(uint8_t motor_addr, CAN_HandleTypeDef *can_handle)
 {
     if (motor_addr < 1 || motor_addr > 8) {
-        LOGERROR("电机地址无效: %d (有效范围: 1-8)", motor_addr);
+        LOGERROR("motor addr invalid: %d (valid 1-8)", motor_addr);
         return NULL;
     }
     
@@ -53,7 +53,7 @@ CANInstance* Emm_V5_CAN_RegisterMotor(uint8_t motor_addr, CAN_HandleTypeDef *can
     
     if (instance == NULL) {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("注册CAN实例失败，地址: 0x%02X", motor_addr);
+        LOGERROR("register CAN instance failed, addr: 0x%02X", motor_addr);
 #endif
         return NULL;
     }
@@ -90,7 +90,7 @@ bool Emm_V5_CAN_Init(uint8_t *motor_ids, uint8_t motor_count)
     
     if (!all_registered) {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("部分电机CAN实例注册失败");
+        LOGERROR("some motor CAN instance register failed");
 #endif
     } else {
 #if CAN_CMD_LOG_LEVEL >= 2
@@ -109,7 +109,7 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
 {
     if (len == 0 || len > 64) {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 命令长度无效: %d", len);
+        LOGERROR("[CAN] invalid cmd len: %d", len);
 #endif
         return false;
     }
@@ -152,7 +152,7 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
     if (!target)
     {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 未找到电机地址为0x%02X的CAN实例", addr);
+        LOGERROR("[CAN] motor addr 0x%02X CAN instance not found", addr);
 #endif
         return false;
     }
@@ -201,7 +201,7 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
         if (!CANTransmit(target, CAN_TX_TIMEOUT_MS))
         {
 #if CAN_CMD_LOG_LEVEL >= 1
-            LOGERROR("[CAN] 帧%d发送失败，ID:0x%02X", packet_index, addr);
+            LOGERROR("[CAN] frame %d send failed, ID:0x%02X", packet_index, addr);
 #endif
             return false;
         }
@@ -577,7 +577,7 @@ int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr)
     if (target == NULL)
     {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 未找到电机地址为0x%02X的CAN实例", addr);
+        LOGERROR("[CAN] motor addr 0x%02X CAN instance not found", addr);
 #endif
         return -1;
     }
@@ -593,7 +593,7 @@ int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr)
     uint32_t wait_result = osEventFlagsWait(target->rx_event, 0x01, osFlagsWaitAny, 100);
     if (wait_result == osFlagsErrorTimeout) {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 电机地址0x%02X 读取编码器超时", addr);
+        LOGERROR("[CAN] motor addr 0x%02X read encoder timeout", addr);
 #endif
         return -1;
     }
@@ -643,7 +643,7 @@ int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr)
     else
     {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 电机地址0x%02X 读取编码器值失败，接收到的功能码: 0x%02X", 
+        LOGERROR("[CAN] motor addr 0x%02X read encoder failed, func code: 0x%02X",
                  addr, target->rx_buff[0]);
 #endif
     }
@@ -670,7 +670,7 @@ int32_t Emm_V5_CAN_Read_Flag(uint8_t addr)
     }
     if (target == NULL) {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 未找到电机地址为0x%02X的CAN实例", addr);
+        LOGERROR("[CAN] motor addr 0x%02X CAN instance not found", addr);
 #endif
         return -1;
     }
@@ -683,7 +683,7 @@ int32_t Emm_V5_CAN_Read_Flag(uint8_t addr)
     uint32_t wait_result = osEventFlagsWait(target->rx_event, 0x01, osFlagsWaitAny, 100);
     if (wait_result == osFlagsErrorTimeout) {
 #if CAN_CMD_LOG_LEVEL >= 1
-        LOGERROR("[CAN] 电机地址0x%02X 读取状态标志超时", addr);
+        LOGERROR("[CAN] motor addr 0x%02X read flag timeout", addr);
 #endif
         return -1;
     }
@@ -692,7 +692,7 @@ int32_t Emm_V5_CAN_Read_Flag(uint8_t addr)
         return (int32_t)target->rx_buff[1];  /* 状态标志字节 */
     }
 #if CAN_CMD_LOG_LEVEL >= 1
-    LOGERROR("[CAN] 电机地址0x%02X 状态标志响应功能码异常: 0x%02X", addr, target->rx_buff[0]);
+    LOGERROR("[CAN] motor addr 0x%02X flag resp func code abnormal: 0x%02X", addr, target->rx_buff[0]);
 #endif
     return -1;
 }
