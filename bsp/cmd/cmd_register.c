@@ -10,7 +10,7 @@
 #include "cmd_register.h"
 #include <string.h>
 
-#define CMD_TABLE_SIZE   24   /* 最多注册命令数 */
+#define CMD_TABLE_SIZE   32   /* 最多注册命令数 (lift10+chassis8+lateral7+mission1=26, 留余量) */
 #define CMD_NAME_MAX_LEN 12   /* 命令名最大长度(含'\0') */
 
 typedef struct {
