@@ -152,6 +152,10 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 header file. */
 /* USER CODE BEGIN 1 */
 #define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* 栈溢出检测: freertos.c 的 vApplicationStackOverflowHook 注释声称 =2, 但本文件
+ * 原本未定义(实为 0, 关闭), 致 defaultTask(512B) 跑 App_Init 栈溢出时静默 HardFault,
+ * 无打印无动作。开启后溢出会触发 hook(freertos.c) 打印任务名定位。 */
+#define configCHECK_FOR_STACK_OVERFLOW 2
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS

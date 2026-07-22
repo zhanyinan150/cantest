@@ -115,6 +115,9 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
     bool y_active = (y_distance > 0.0f);
     bool z_active = (z_distance > 0.0f);
 
+    printf("[motor] Motor_XYZ start: x=%d y=%d z=%d (1=active)\r\n",
+           (int)x_active, (int)y_active, (int)z_active);
+
     uint16_t vel_x = Motor_ClampVel(x_vel);
     uint8_t  acc_x = Motor_ClampAcc(x_acc);
     uint16_t vel_y = Motor_ClampVel(y_vel);
@@ -131,6 +134,7 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         else
             Lift_Down(z_distance); /* 1=下 */
         z_target_cm = Lift_GetStatus()->target_displacement;
+        printf("[motor] Z start dir=%d target=%.2fcm\r\n", (int)z_dir, z_target_cm);
     }
     osDelay(20);
         /* ===== 1. 启动 X/Y 步进 (CAN2) =====
@@ -143,6 +147,8 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
     {
         uint32_t clk_x = Motor_DistanceToClk(x_distance, MOTOR_X_WHEEL_CIRCUMFERENCE_CM, MOTOR_X_GEAR_RATIO);
         Emm_V5_Pos_Control(MOTOR_X_ADDR, x_dir, vel_x, acc_x, clk_x, false, false);  /* X改用 UART5 (Emm_V5.c) */
+        printf("[motor] X sent clk=%lu vel=%u acc=%u (UART5)\r\n",
+               (unsigned long)clk_x, (unsigned)vel_x, (unsigned)acc_x);
         osDelay(20);
     }
     if (y_active)
@@ -151,9 +157,12 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         /* Y1/Y2 固定 snF=true 同步预存, 配合 Synchronous_motion 同时启动。
          * 若两电机安装方向镜像, 将其中一行的 y_dir 改为 (!y_dir)。 */
         Emm_V5_CAN_Pos_Control(MOTOR_Y_ADDR_1, y_dir, vel_y, acc_y, clk_y, false, true);
-        Emm_V5_CAN_Pos_Control(MOTOR_Y_ADDR_2, y_dir, vel_y, acc_y, clk_y, false, true);
+        Emm_V5_CAN_Pos_Control(MOTOR_Y_ADDR_2, !y_dir, vel_y, acc_y, clk_y, false, true);
     
         Emm_V5_CAN_Synchronous_motion(0);  /* 广播地址0, 触发所有预存电机同步启动 */
+        printf("[motor] Y sent clk=%lu vel=%u acc=%u Y1dir=%d Y2dir=%d (CAN2+sync)\r\n",
+               (unsigned long)clk_y, (unsigned)vel_y, (unsigned)acc_y,
+               (int)y_dir, (int)(!y_dir));
 		}
 
     /* ===== 3. 轮询等待全轴到位 (osDelay, 不忙等) =====

@@ -107,7 +107,11 @@ int main(void)
   MX_USART3_UART_Init();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
-
+  /* USART1 TX 通路诊断: 调度器启动前直接发一帧, 排除 RTOS/printf 因素。
+   * 串口工具收到 "UART1-OK" -> PA9 TX 通路正常, 问题在端口接错或 RTOS 侧;
+   * 收不到 -> 物理上没接到 USART1(可能在看 USB-CDC, 或线序/波特率错)。
+   * 定位后删本行。 */
+  HAL_UART_Transmit(&huart1, (uint8_t *)"UART1-OK\r\n", 10, 100);
   /* USER CODE END 2 */
 
   /* Init scheduler */

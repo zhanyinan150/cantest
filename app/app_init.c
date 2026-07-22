@@ -104,16 +104,19 @@ void App_Init(void)
    * 走 UART5 (Emm_V5 协议, 115200) 控制 3 号电机, 任务定义见 usart_test.c。
    * 恢复 CAN2 测试改回 MotorTest_Init() 即可。 */
   // UartTest_Init();  /* 测试停用, usart_test.c 已删除 */
-#if 1  /* 步进初始化启用: Emm_V5_CAN_Init{1,2,3} + CAN2 启动 + Motor_Init 使能 X/Y */
-  uint8_t stepper_ids[3] = {1, 2, 3};  /* Y1, Y2, X */
-  Emm_V5_CAN_Init(stepper_ids, 3);
+#if 1  /* 步进初始化启用: Emm_V5_CAN_Init{1,2} + CAN2 启动 + Motor_Init 使能 X/Y */
+  /* Y1/Y2 走 CAN2(扩展帧). X(3) 走 UART5(Emm_V5.c, huart5), 不在 CAN2 注册,
+   * 故只向 bsp_can 注册 {1,2} 两个 CAN2 实例。X 的使能/位置命令由
+   * Motor_Init / Motor_XYZ 经 Emm_V5_* (UART版) 下发, 不经过 bsp_can。 */
+  uint8_t stepper_ids[2] = {1, 2};  /* Y1, Y2 (X=3 走 UART5, 不在此) */
+  Emm_V5_CAN_Init(stepper_ids, 2);
 
   HAL_CAN_Start(&hcan2);
   HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING);
   HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO1_MSG_PENDING);
 
-  /* XYZ起重机机构: Y双电机(1,2) + X(3) 步进, Z 由 lift(M2006) 升降。
-   * Motor_Init: 使能三只步进 + 注册 mxyz 命令(串口发 mxyz 触发三轴联动)。
+  /* XYZ起重机机构: Y双电机(1,2) CAN2 + X(3) UART5 + Z 由 lift(M2006) 升降。
+   * Motor_Init: 使能三只步进(X 经 UART5, Y1/Y2 经 CAN2 同步)。
    * 底盘(Chassis_Init)与 Y 轴地址 1,2 冲突, 本机构不用底盘, 已停用。 */
   Motor_Init();
   /* Chassis_Init(); */  /* 停用: 底盘地址 1,2 与 Y 轴冲突 */
@@ -256,12 +259,14 @@ void App_Init(void)
   */
 static void MotorAutoTask(void *argument)
 {
+  printf("[auto] MotorAutoTask start, wait %dms\r\n", MOTOR_AUTO_STARTUP_DELAY);
   osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
 
-
-  int ret = Motor_XYZ(1,50, 20, 30.0f,    /* X: dir=1(右), 300rpm, acc=180, 10cm */
-                      1, 100, 20, 50.0f,    /* Y: dir=1(前), 300rpm, acc=180, 10cm (双电机同步) */
-                      1, 35.0f);             /* Z: dir=1(下), 35cm */
+  printf("[auto] call Motor_XYZ\r\n");
+  int ret = Motor_XYZ(1,50, 20, 10.0f,    /* X: dir=1(右), 50rpm, acc=20, 30cm */
+                      1, 100, 20, 50.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                      0, 25.0f);             /* Z: dir=1(下), 35cm */
+  printf("[auto] Motor_XYZ ret=%d (0=arrived, -1=timeout/stall)\r\n", ret);
 
   for (;;) osDelay(1000);  /* 跑完保活, 不退出 */
 }
