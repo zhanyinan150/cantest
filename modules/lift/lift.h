@@ -38,8 +38,8 @@ typedef struct {
 /* 机械参数 (轮径/减速比/周长) 统一在 mech_params.h 定义, 周长由 π×轮径 派生 */
 
 /* 运动参数定义 */
-#define LIFT_DEFAULT_SPEED       5.0f   // 默认上升/下降速度 (cm/s)
-#define LIFT_MAX_SPEED          10.0f   // 最大速度 (cm/s)
+#define LIFT_DEFAULT_SPEED       10.0f   // 默认上升/下降速度 (cm/s)
+#define LIFT_MAX_SPEED          20.0f   // 最大速度 (cm/s)
 /* 位移上下限: 36:1 减速 + 多圈 total_angle 闭环, 实际行程远大于单圈。
  * 设 ±400cm, 匹配预设点位(最高360cm)。所有目标位置入口统一经此限幅。 */
 #define LIFT_MAX_DISPLACEMENT   400.0f  // 最大向上位移 (cm)
@@ -117,6 +117,14 @@ float Lift_GetCurrentDisplacement(void);
  * @retval true 已到位, false 超时未到位
  */
 bool Lift_WaitUntilAtTarget(uint32_t timeout_ms);
+
+/**
+ * @brief 注册升降到位回调 (上层 mission 用于事件驱动编排)
+ * @note  回调在 LiftTask 上下文执行, 应简短(如 xEventGroupSetBits)。
+ *        到位=位移误差≤2cm, 边沿触发一次(运动中→到位)。
+ *        反向解耦: lift 不 include mission, 由 mission 主动注册。
+ */
+void Lift_SetArrivedCallback(void (*cb)(void));
 
 /* ===== PID 调参 API =====
  * 封装对升降电机串级 PID 的读写, 避免外部直接访问 lift_motor->motor_controller

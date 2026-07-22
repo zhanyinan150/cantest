@@ -829,27 +829,27 @@ ARM Macro Assembler    Page 13
   422 0000001C                 END
               00000000 
               00000000 
-Command Line: --debug --xref --diag_suppress=9931 --cpu=Cortex-M4.fp.sp --apcs=
-interwork --depend=cantest\startup_stm32f407xx.d -ocantest\startup_stm32f407xx.
-o -I../app -I../Core/Inc -I../Drivers/STM32F4xx_HAL_Driver/Inc -I../Drivers/STM
-32F4xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/inclu
-de -I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/
-Third_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I../Drivers/CMSIS/Device/ST
-/STM32F4xx/Include -I../Drivers/CMSIS/Include -I../bsp/dwt -I../bsp/log -I../bs
-p/printf -I../bsp/vofa -I../bsp/can -I../bsp/cmd -I../bsp/telemetry -I../bsp/ua
-rt -I../modules -I../modules/PID -I../modules/ADRC -I../modules/dji_motor -I../
-modules/ZDT_EmmV5 -I../modules/ZDT_EmmV5/CAN -I../modules/ZDT_X42 -I../modules/
-servo -I../modules/lift -I../modules/chassis -I.\RTE\_cantest -ID:\keil_anzhuan
-g\keil\pack\ARM\CMSIS\5.9.0\CMSIS\Core\Include --predefine="__MICROLIB SETA 1" 
---predefine="__UVISION_VERSION SETA 539" --predefine="_RTE_ SETA 1" --predefine
-="STM32F407xx SETA 1" --predefine="_RTE_ SETA 1" --list=startup_stm32f407xx.lst
+Command Line: --debug --xref --diag_suppress=9931 --cpu=Cortex-M4.fp --apcs=int
+erwork --depend=cantest\startup_stm32f407xx.d -ocantest\startup_stm32f407xx.o -
+I../app -I../Core/Inc -I../Drivers/STM32F4xx_HAL_Driver/Inc -I../Drivers/STM32F
+4xx_HAL_Driver/Inc/Legacy -I../Middlewares/Third_Party/FreeRTOS/Source/include 
+-I../Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2 -I../Middlewares/Thi
+rd_Party/FreeRTOS/Source/portable/RVDS/ARM_CM4F -I../Drivers/CMSIS/Device/ST/ST
+M32F4xx/Include -I../Drivers/CMSIS/Include -I../bsp/dwt -I../bsp/log -I../bsp/p
+rintf -I../bsp/vofa -I../bsp/can -I../bsp/cmd -I../bsp/telemetry -I../bsp/uart 
+-I../modules -I../modules/PID -I../modules/ADRC -I../modules/dji_motor -I../mod
+ules/ZDT_EmmV5 -I../modules/ZDT_EmmV5/CAN -I../modules/ZDT_X42 -I../modules/ser
+vo -I../modules/lift -I../modules/chassis -I../modules/lateral -I../modules/mis
+sion -I../modules/laser -I.\RTE\_cantest -IE:\ARM\CMSIS\5.0.1\CMSIS\Include --p
+redefine="__MICROLIB SETA 1" --predefine="__UVISION_VERSION SETA 524" --predefi
+ne="_RTE_ SETA 1" --predefine="STM32F407xx SETA 1" --list=startup_stm32f407xx.l
 
 
 
 ARM Macro Assembler    Page 14 
 
 
- startup_stm32f407xx.s
+st startup_stm32f407xx.s
 
 
 

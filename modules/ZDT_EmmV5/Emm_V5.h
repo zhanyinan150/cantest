@@ -4,12 +4,32 @@
 #include "usart.h"
 #include <stdbool.h>  // 添加stdbool.h，定义bool类型
 /**********************************************************
-***	Emm_V5.0步进闭环控制例程
+***	Emm_V5.0步进闭环控制例程 (UART串口通讯版, 横移电机)
 ***	编写作者：ZHANGDATOU
 ***	技术支持：张大头闭环技术
 ***	淘宝店铺：https://zhangdatou.taobao.com
 ***	CSDN博客：https://blog.csdn.net/zhangdatou666
 ***	qq交流群：262438510
+***
+*** ===== 电机菜单设置 (首次上电在小屏幕配置, 详见说明书第4章) =====
+*** 电机型号 : Emm42_V5.0 (Emm5.0固件)
+*** P_Pul    : PUL_FOC      (FOC矢量闭环)
+*** P_Serial : UART_FUN     (通讯端口复用为串口TTL/RS232/RS485)
+*** En       : Hold         (一直使能, 由软件F3命令控制)
+*** MStep    : 16           (细分; 位置模式每转脉冲 = 200×16 = 3200)
+*** ID_Addr  : 1~4          (电机地址)
+*** UartBaud : 115200       (须与主控UART5波特率一致)
+*** Checksum : 0x6B         (固定校验字节)
+*** Response : Receive      (只返回确认收到)
+*** Cal      : 首次上电空载校准
+***
+*** ===== 串口通讯协议要点 (说明书 6.2.1) =====
+*** 帧格式   : 地址 + 功能码 + 命令数据 + 0x6B
+***             (串口版数据区含地址字节; CAN版地址在ExtId里, 数据区不含)
+*** 速度范围 : 0~3000 RPM (F6速度模式, 0x0BB8; >3000驱动器返回E2)
+*** 位置脉冲 : FD命令clk单位=细分脉冲, 16细分下3200脉冲/圈 (非编码器值65536!)
+*** 加速度   : 0~255档, 0=直接启动; 公式 t=(256-acc)*50us 每1RPM
+*** 注意     : 本文件函数通过 UART5 (huart5) 发送, 供横移模块使用
 **********************************************************/
 
 #define		ABS(x)		((x) > 0 ? (x) : -(x))
@@ -52,5 +72,6 @@ void Emm_V5_Get_All_Encoders(int32_t encoder[4]);
 void Emm_V5_Init(void);
 void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 void Emm_V5_Reset_Encoder_Accumulation(uint8_t id);
+int32_t Emm_V5_Read_Encoder(uint8_t addr);  /* 读取单电机编码器累计值 (多圈, 含回绕处理) */
 void X_vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF);
 #endif

@@ -19,3 +19,7 @@ MDK-ARM/RTE/
 
 # CubeMX
 .mxproject
+
+# Python
+__pycache__/
+*.pyc

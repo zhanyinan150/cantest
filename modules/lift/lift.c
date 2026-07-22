@@ -34,6 +34,10 @@ DJIMotorInstance *lift_motor = NULL;
 Lift_Status_t lift_status;
 osThreadId_t liftTaskHandle = NULL;
 
+/* 到位回调 (由上层 mission 注册, 升降到位时边沿触发一次, 反向解耦) */
+static void (*s_arrived_cb)(void) = NULL;
+void Lift_SetArrivedCallback(void (*cb)(void)) { s_arrived_cb = cb; }
+
 /* 私有函数声明 */
 static float Lift_AngleToDisplacement(float angle);
 static float Lift_DisplacementToAngle(float displacement);
@@ -105,7 +109,7 @@ int Lift_Init(void)
         .controller_setting_init_config = {
             .close_loop_type = ANGLE_AND_SPEED_LOOP,  /* 速度环 + 位置环串级 */
             .outer_loop_type = ANGLE_LOOP,               /* 外环为位置环 */
-            .motor_reverse_flag = MOTOR_DIRECTION_REVERSE,
+            .motor_reverse_flag = MOTOR_DIRECTION_NORMAL,  /* 电机正方向=位移增大(下降), 无需反转 */
             .feedback_reverse_flag = FEEDBACK_DIRECTION_NORMAL,
             .angle_feedback_source = MOTOR_FEED,
             .speed_feedback_source = MOTOR_FEED,
@@ -159,6 +163,17 @@ void LiftTask(void *argument)
 
         // 控制电机
         Lift_ControlMotors();
+
+        // 到位检测(边沿触发): is_moving 在 Lift_SetTarget 时置 true, 到位后置 false。
+        // 连续 PID 闭环下电机始终被维持, 用 is_moving 做边沿, 保证一次运动只回调一次,
+        // 不会因到位后的小抖动反复触发 (到位后 is_moving=false, 抖动不会再置 true)。
+        if (lift_status.is_moving) {
+            float err = fabsf(lift_status.current_displacement - lift_status.target_displacement);
+            if (err <= 2.0f) {  // 位移误差进入 2cm 容差带 → 判到位
+                lift_status.is_moving = false;
+                if (s_arrived_cb) s_arrived_cb();  // 通知 mission → SetBits(EVT_LIFT)
+            }
+        }
 
         // 精确周期延时
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(LIFT_TASK_PERIOD));

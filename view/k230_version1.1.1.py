@@ -1,0 +1,688 @@
+from libs.PipeLine import PipeLine, ScopedTiming
+from libs.AIBase import AIBase
+from libs.AI2D import Ai2d
+import os,sys,gc,time,random,utime,urandom, math
+import ujson
+from media.media import *
+from time import *
+import nncase_runtime as nn
+import ulab.numpy as np
+import image,aidemo,aicube
+from media.sensor import *
+from media.display import *
+from machine import Pin,FPIOA,UART
+#import time, os, sys
+from libs.PipeLine import ScopedTiming
+from libs.Utils import *
+
+#配置串口
+fpioa = FPIOA()
+fpioa.set_function(50, FPIOA.UART3_TXD)
+fpioa.set_function(51, FPIOA.UART3_RXD)
+fpioa.set_function(53, FPIOA.GPIO53)
+
+#对分辨率进行一些配置
+display_width = 800
+display_height = 480
+
+uart = UART(UART.UART3, baudrate=115200, bits=UART.EIGHTBITS, parity=UART.PARITY_NONE, stop=UART.STOPBITS_ONE)
+
+OUT_RGB888P_WIDTH = ALIGN_UP(640, 16)
+OUT_RGB888P_HEIGHT = 360
+# 显示模式选择
+DISPLAY_MODE = "LCD"
+
+picture_width = 800
+picture_height = 480
+
+if DISPLAY_MODE == "LCD":
+    DISPLAY_WIDTH = 800
+    DISPLAY_HEIGHT = 480
+
+
+class_1_map = {
+    "one": 0x01,
+    "two": 0x02,
+    "three": 0x03,
+    "four": 0x04,
+    "five": 0x05,
+    "greenbean": 0x06,
+    "yellowbean": 0x07,
+    "whitebean": 0x08
+}
+
+#分辨率比例转换，这里用于将lcd屏幕的800*480转换为适用于YOLO的分辨率640
+def two_side_pad_param(input_size, output_size):
+    ratio_w = output_size[0] / input_size[0]  # 宽度缩放比例
+    ratio_h = output_size[1] / input_size[1]  # 高度缩放比例
+    ratio = min(ratio_w, ratio_h)  # 取较小的缩放比例
+    new_w = int(ratio * input_size[0])  # 新宽度
+    new_h = int(ratio * input_size[1])  # 新高度
+    dw = (output_size[0] - new_w) / 2  # 宽度差
+    dh = (output_size[1] - new_h) / 2  # 高度差
+    top = int(round(dh - 0.1))
+    bottom = int(round(dh + 0.1))
+    left = int(round(dw - 0.1))
+    right = int(round(dw + 0.1))
+    return top, bottom, left, right, ratio
+
+def split_coordinates(value):
+    """
+    将一个16位数值拆分为高字节和低字节
+    value: 要拆分的16位整数值
+    return: (high_byte, low_byte) 元组
+    """
+    high_byte = (value >> 8) & 0xFF  # 右移8位获取高字节
+    low_byte = value & 0xFF          # 与0xFF按位与获取低字节
+    return high_byte, low_byte
+
+# 自定义YOLO检测类，继承自AIBase基类
+class YOLOv11App(AIBase):
+    def __init__(self, kmodel_path, model_input_size, anchors, confidence_threshold=0.8, nms_threshold=0.2, rgb888p_size = [640, 360], display_size=[800,480], debug_mode=0):
+        super().__init__(kmodel_path, model_input_size, rgb888p_size, debug_mode)  # 调用基类的构造函数
+        self.class_id = ["greenbean","yellowbean","whitebean","one", "two", "three", "four", "five"]
+        self.kmodel_path = kmodel_path  # 模型文件路径
+        self.model_input_size = model_input_size  # 模型输入分辨率
+        self.confidence_threshold = confidence_threshold  # 置信度阈值
+        self.nms_threshold = nms_threshold  # NMS（非极大值抑制）阈值
+        self.anchors = anchors  # 锚点数据，用于目标检测
+        self.rgb888p_size = [ALIGN_UP(rgb888p_size[0], 16), rgb888p_size[1]]  # sensor给到AI的图像分辨率，并对宽度进行16的对齐
+        self.display_size = [ALIGN_UP(display_size[0], 16), display_size[1]]  # 显示分辨率，并对宽度进行16的对齐
+        self.debug_mode = debug_mode  # 是否开启调试模式
+        self.ai2d = Ai2d(debug_mode)  # 实例化Ai2d，用于实现模型预处理
+        self.ai2d.set_ai2d_dtype(nn.ai2d_format.NCHW_FMT, nn.ai2d_format.NCHW_FMT, np.uint8, np.uint8)  # 设置Ai2d的输入输出格式和类型
+        self.last_result = None  #防抖收留此次数据的变量
+        self.stable_count = 0 #防抖计数变量
+        self.side_result = None  # 保存摄像头0（侧面）识别的数字a
+        self.full_result = None  # 保存整合后的完整5个数字结果
+        self.front_result_a = None
+        self.front_last_result = None
+        self.front_stable_count = 0
+        # === 新增：用于 LCD 显示的数据状态 ===
+        self.send_status_text = ""
+        self.send_status_color = (255, 255, 255, 255) # 默认白色
+
+    # 配置预处理操作，这里使用了pad和resize，Ai2d支持crop/shift/pad/resize/affine，具体代码请打开/sdcard/app/libs/AI2D.py查看
+    def config_preprocess(self, input_image_size=None):
+        with ScopedTiming("set preprocess config", self.debug_mode > 0):  # 计时器，如果debug_mode大于0则开启
+            ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size  # 初始化ai2d预处理配置，默认为sensor给到AI的尺寸，可以通过设置input_image_size自行修改输入尺寸
+            top, bottom, left, right = self.get_padding_param()  # 获取padding参数
+            print("padding: {} {} {} {}".format(top, bottom, left, right))
+            self.ai2d.pad([0, 0, 0, 0, top, bottom, left, right], 0, [104, 117, 123])  # 填充边缘
+            self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)  # 缩放图像
+            self.ai2d.build([1,3,ai2d_input_size[1],ai2d_input_size[0]],[1,3,self.model_input_size[1],self.model_input_size[0]])  # 构建预处理流程
+
+    # 自定义当前任务的后处理，results是模型输出array列表
+    def postprocess(self, results):
+        counter = 0
+        det_res = []
+        with ScopedTiming("postprocess", self.debug_mode > 0):
+            # 输出形状为[1, 1, 14, 2100]
+            # 意思是，输出了2100个框，每个框有14个数据，其中前4个数据是xywh，后面10个是每个类别对应的置信度，这里的xy指的是中心点坐标
+            for i in range(2100):
+                try:
+                    result = results[0][0][:, i]
+                    max_score = max(result[4:])
+                    if max_score > self.confidence_threshold:
+                        # 这里把位置信息恢复到1920 * 1080画布下的状态
+                        x = result[0] * max(self.rgb888p_size) / max(self.model_input_size)
+                        y = result[1] * max(self.rgb888p_size) / max(self.model_input_size)
+                        w = result[2] * max(self.rgb888p_size) / max(self.model_input_size)
+                        h = result[3] * max(self.rgb888p_size) / max(self.model_input_size)
+                        det_res.append([x, y, w, h, list(result[4:]).index(max_score), max_score])
+                except Exception as e:
+                    # 捕获异常，跳过当前i，不卡死
+                    print(f"i={i} 出错: {e}")
+                    continue
+            det_res.sort(key=lambda x:x[-1], reverse=True)
+            det_res_single = []
+            added_class = []
+            for result in det_res:
+                if not result[-2] in added_class:
+                    added_class.append(result[-2])
+                    det_res_single.append(result)
+        return det_res_single
+
+    # 绘制检测结果到画面上
+    def draw_result(self,dets,img_display):
+        osd_img = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.ARGB8888)
+        osd_img.clear()  # 先清除上一帧OSD图像
+        if dets:
+            for det in dets:
+                if len(det) < 6:
+                    continue
+                # 将检测框的坐标转换为显示分辨率下的坐标
+                x, y, w, h = map(lambda x: int(round(x, 0)), det[:4])
+                x = x * self.display_size[0] // self.rgb888p_size[0]
+                y = y * self.display_size[1] // self.rgb888p_size[1]
+                w = w * self.display_size[0] // self.rgb888p_size[0]
+                h = h * self.display_size[1] // self.rgb888p_size[1]
+                osd_img.draw_rectangle(x - w//2, y - h // 2, w, h, color=(255, 0, 255, 0), thickness=2)  # 绘制矩形框
+                osd_img.draw_string_advanced(x - w//2, y - h // 2, 40, "{} {}".format(self.class_id[det[-2]], round(det[-1], 2)), color=(255, 0, 255, 0)) # 画标签和置信度
+            # OSD层位置为(0,0)，覆盖整个屏幕，仅绘制的检测框/文字可见
+        else:
+            osd_img.clear()
+
+        # === 新增：在画面右下角绘制当前数据的发送状态 ===
+        if self.send_status_text:
+            # 参数：x坐标, y坐标, 字体大小, 文本, 颜色
+            osd_img.draw_string_advanced(580, 430, 30, self.send_status_text, color=self.send_status_color)
+        Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
+        Display.show_image(osd_img, 0, 0, Display.LAYER_OSD1)
+
+    ###往下看***********************************************************************#
+    def save_side_result(self, dets):
+        """保存摄像头0(侧面)识别的数字,取置信度最高的1个"""
+        if not dets:
+            self.side_result = None
+            return 0x00
+
+        # === 核心修复：强制拦截豆子 ===
+        # 遍历所有识别到的目标，只保留 class_id 在 3 到 7 之间（即 one 到 five）的数字
+        valid_dets = []
+        for d in dets:
+            if len(d) >= 6:
+                class_idnum = int(d[4])
+                if 3 <= class_idnum <= 7:
+                    valid_dets.append(d)
+                else:
+                    # 如果检测到豆子 (0, 1, 2)，直接丢弃并打印提示
+                    cls_name = self.class_id[class_idnum] if class_idnum < len(self.class_id) else "unknown"
+                    print(f"已拦截侧面干扰物: {cls_name}")
+
+        # 如果过滤完所有的豆子后，没有有效的数字了，直接返回 0x00
+        if not valid_dets:
+            self.side_result = None
+            return 0x00
+        # 取置信度最高的目标（避免多个误识别干扰）
+        best_det = max(dets, key=lambda x: x[5])
+        class_idnum = best_det[4]
+        cls_name = self.class_id[int(class_idnum)] if int(class_idnum) < len(self.class_id) else ""
+        self.side_result = class_1_map.get(cls_name, 0x00)
+        print(f"侧面结果已保存: {cls_name} (0x{self.side_result:02X})")
+        print(self.side_result)
+        return self.side_result
+
+    def integrate_results(self):
+        """整合摄像头3保存的正面3个数字 + 摄像头0识别的侧面1个数字"""
+        # 校验前置条件：必须先有正面3个数字和侧面1个数字
+        if self.front_result_a is None or len(self.front_result_a) != 3:
+            print("错误：未获取到有效正面3个数字结果")
+            return [0x00] * 4
+        if self.side_result is None:
+            print("错误：未获取到侧面数字结果")
+            return [0x00] * 4
+
+        # 整合顺序：[侧面数字, 正面第1个, 正面第2个, 正面第3个]
+        # 如需调整顺序，直接改这里即可
+        integrated = [self.side_result] + self.front_result_a
+        hex_list = []
+        for x in integrated:
+            hex_list.append('0x{:02X}'.format(x))
+        print("4个已知数字：" + str(hex_list))
+        return integrated
+
+    def infer_fifth_number(self, known_nums):
+        """根据4个不重复的1-5数字，推测缺失的第5个"""
+        all_nums = {0x01, 0x02, 0x03, 0x04, 0x05}
+        known_set = set(known_nums) - {0x00}
+        if len(known_set) == 4:
+            missing = all_nums - known_set
+            fifth_num = missing.pop()
+            print(f"推测第五个数字: 0x{fifth_num:02X}")
+            return fifth_num
+        else:
+            print(f"无法推测，有效数字数量: {len(known_set)}")
+            return 0x00
+    #往上看**********************************************************************************************************************
+
+    def is_valid_data(self, data_list):
+        """
+        检测准备发送或保存的数字列表是否有效，并更新LCD显示状态
+        """
+        # 1. 拦截条件：如果没数据或全是 0x00
+        if not data_list or all(item == 0x00 for item in data_list):
+            self.send_status_text = "无效信息发送"  # 触发拦截
+            self.send_status_color = (255, 255, 0, 0) # 红色 (ARGB: 255透明度, 255红, 0绿, 0蓝)
+            return False
+
+        # 2. 放行条件：数据正常
+        self.send_status_text = "有效信息发送"
+        self.send_status_color = (255, 0, 255, 0) # 绿色 (ARGB: 255透明度, 0红, 255绿, 0蓝)
+        return True
+
+    #防抖函数
+    def prevent_shaking(self,full_result):
+        if full_result == self.last_result:
+            self.stable_count += 1
+        else:
+            self.stable_count = 0
+            self.last_result = full_result
+
+        print(self.stable_count)
+        print(self.last_result)
+        if self.stable_count < 3:
+            return False# 不稳定，不发送
+        else:
+            self.last_result = None
+            self.stable_count = 0
+            return True
+
+    def draw_number_sort(self, dets, sensor_number, thing_num: int):
+        # 1. 通用过滤：保留置信度≥0.8的目标
+        filtered_dets = [det for det in dets if len(det)>=6 and det[5]>=0.80]
+        res_sorted = sorted(filtered_dets, key=lambda x: x[0])  # 按x坐标从左到右排序
+
+        # 2. 数字识别场景（thing_num=5）
+        if thing_num == 5:
+            # 摄像头2（正面）：加防抖+仅在此处清空旧数据
+            if sensor_number == 0x03:
+                # 满足需求1：只有开启摄像头2识别正面时，才清空上一轮的旧数据
+                if self.front_last_result is None:
+                    self.front_result_a = None
+                    self.front_stable_count = 0
+                # 获取当前帧的正面3个数字
+                current_front = []
+                for det in res_sorted[:3]:
+                    class_idnum = det[4]
+                    cls_name = self.class_id[int(class_idnum)] if int(class_idnum) < len(self.class_id) else ""
+                    current_front.append(class_1_map.get(cls_name, 0x00))
+                current_front += [0x00] * (3 - len(current_front))
+
+                if 0x00 not in current_front:
+                    #s正面数字加防抖（连续3帧相同才更新front_result_a）
+                    if current_front == self.front_last_result:
+                        self.front_stable_count += 1
+                    else:
+                        self.front_stable_count = 0
+                        self.front_last_result = current_front
+
+                    # 连续3帧稳定，才保存到front_result_a
+                    if self.front_stable_count >= 3:
+                        self.front_result_a = current_front
+                        hex_strings = ['0x{:02X}'.format(x) for x in self.front_result_a]
+                        print(f"正面3个数字已稳定保存：{hex_strings}")
+                        # 防抖成功后重置计数，避免重复保存
+                        self.front_stable_count = 0
+                    else:
+                        hex_strings = ['0x{:02X}'.format(x) for x in current_front]
+                        print(f"正面数字防抖中：第{self.front_stable_count}帧，当前：{hex_strings}")
+                return
+
+            # 摄像头0（侧面）：整合+推测+发送（不再清空front_result_a）
+            elif sensor_number == 0x01:
+                # 保存侧面数字（每帧刷新）
+                self.save_side_result(res_sorted)
+                # 整合正面3个+侧面1个
+                integrated = self.integrate_results()
+                # 推测第五个数字
+                fifth_num = self.infer_fifth_number(integrated)
+                # 构造完整5个数字
+                self.full_result = integrated + [fifth_num]
+                self.full_result = self.full_result[:5] + [0x00] * (5 - len(self.full_result))
+
+                # 防抖校验后发送
+                MA = bytearray([
+                    sensor_number, 0x00,
+                    self.full_result[0], self.full_result[1], self.full_result[2],
+                    self.full_result[3], self.full_result[4], 0x6B
+                ])
+                if self.prevent_shaking(self.full_result):
+                    uart.write(MA)
+                    print(f"发送完整5位数字: {MA.hex()}")
+                    #  已删除此处的清空代码，front_result_a 仅在下次正面识别时清空
+                    self.side_result = None
+                    self.full_result = None
+                return self.full_result
+
+        # 3. 豆子识别场景（完全不变）
+        elif thing_num == 3:
+            send_data = []
+            for obj in res_sorted:
+                if len(obj)>=5:
+                    cls_name = self.class_id[int(obj[4])] if int(obj[4])<len(self.class_id) else ""
+                    if cls_name in class_1_map:
+                        send_data.append(class_1_map[cls_name])
+            send_data = send_data[:3] + [0x00]*(3 - len(send_data))
+            if 0x00 not in send_data:
+                MA = bytearray([sensor_number, 0x00, send_data[0], send_data[1], send_data[2], 0x00, 0x00, 0x6B])
+                if self.prevent_shaking(send_data):
+                    uart.write(MA)
+                    return send_data
+        return []
+
+    # 获取padding参数
+    def get_padding_param(self):
+        dst_w = self.model_input_size[0]  # 模型输入宽度
+        dst_h = self.model_input_size[1]  # 模型输入高度
+        ratio_w = dst_w / self.rgb888p_size[0]  # 宽度缩放比例
+        ratio_h = dst_h / self.rgb888p_size[1]  # 高度缩放比例
+        ratio = min(ratio_w, ratio_h)  # 取较小的缩放比例
+        new_w = int(ratio * self.rgb888p_size[0])  # 新宽度
+        new_h = int(ratio * self.rgb888p_size[1])  # 新高度
+        dw = (dst_w - new_w) / 2  # 宽度差
+        dh = (dst_h - new_h) / 2  # 高度差
+        top = int(round(0))
+        bottom = int(round(dh * 2 + 0.1))
+        left = int(round(0))
+        right = int(round(dw * 2 - 0.1))
+        return top, bottom, left, right
+
+    #截取数据流（拍摄照片）
+    def sensor_control(self,sensor):
+        img_display = sensor.snapshot(chn=0)
+        img_ai = sensor.snapshot(chn=2)
+        return img_display, img_ai
+
+    #对指定摄像头进行初始化
+    def config_camera_and_display(self,camera_id):
+        """
+        配置指定ID的摄像头，返回配置好的sensor对象
+        :param camera_id: 摄像头数字ID（目前支持0/2，可扩展）
+        :return: 配置完成的Sensor对象，当None（ID不合法时）
+        """
+        # 校验摄像头ID合法性（可根据实际硬件扩展支持的ID）
+
+        supported_ids = [0, 1, 2]
+        if camera_id not in supported_ids:
+            print(f"错误：不支持的摄像头ID {camera_id}，仅支持{supported_ids}")
+            return None
+        print(111)
+        # 初始化摄像头对象
+        sensor = Sensor(id=camera_id)
+        print(222)
+        sensor.reset()  # 重置摄像头
+        print(222)
+        # 配置【显示通道】（给LCD）：800x480 + RGB565
+        sensor.set_framesize(width=800, height=480, chn=CAM_CHN_ID_0)
+        sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_0)
+        # 配置【AI通道】（给YOLO）：对齐后的分辨率 + RGBP888
+        sensor.set_framesize(width=OUT_RGB888P_WIDTH, height=OUT_RGB888P_HEIGHT, chn=CAM_CHN_ID_2)
+        sensor.set_pixformat(PIXEL_FORMAT_RGB_888_PLANAR, chn=CAM_CHN_ID_2)
+        print(333)
+        # 镜像/翻转配置（和原有逻辑保持一致）
+        sensor.set_hmirror(False)
+        sensor.set_vflip(False)
+        print(f"摄像头 {camera_id} 配置完成")
+        return sensor
+
+    # AIBase.py 里的 preprocess()
+    def preprocess(self, input_np):
+        with ScopedTiming("preprocess", self.debug_mode > 0):
+            # 【步骤1.1】调用 ai2d.run() 做硬件预处理
+            return [self.ai2d.run(input_np)]
+
+    # AIBase.py 里的 inference()
+    def inference(self, tensors):
+        with ScopedTiming("set input", self.debug_mode > 0):
+            self.results.clear()
+            for i in range(self.kpu.inputs_size()):
+                # 【步骤2.1】绑定输入张量
+                self.kpu.set_input_tensor(i, tensors[i])
+        with ScopedTiming("kpu run", self.debug_mode > 0):
+            # 【步骤2.2】KPU 硬件推理（最容易卡死的地方）
+            self.kpu.run()
+        with ScopedTiming("get output", self.debug_mode > 0):
+            # 【步骤2.3】获取输出张量
+            for i in range(self.kpu.outputs_size()):
+                output_data = self.kpu.get_output_tensor(i)
+                result = output_data.to_numpy()
+                self.results.append(result)
+                del output_data
+        return self.results
+
+    def get_frame(self, img):
+        with ScopedTiming("get a frame", self.debug_mode > 0):
+            # 传入 img（Image对象），直接转 numpy 数组返回
+            input_np = img.to_numpy_ref()
+            #print(f"最终输入AI的 shape: {input_np.shape}")
+            return input_np
+
+    def run(self, input_img):
+        #print("\n========== 进入 run() 函数 ==========")
+
+        # ==========================
+        # 关键：接收 image → 自动转 numpy
+        # ==========================
+        try:
+            # 调用你自己的 get_frame，把 image 转 numpy
+            input_np = self.get_frame(input_img)
+            #print("image 转 numpy 成功")
+            #print(f"最终输入AI的 shape: {input_np.shape}")
+        except Exception as e:
+            #print(f"get_frame 转换失败: {e}")
+            return []
+
+        # ==========================
+        # 预处理（AI2D，不会再卡死）
+        # ==========================
+        print("[1/3] 开始预处理...")
+        try:
+            self.tensors = self.preprocess(input_np)
+            #print("[1/3]预处理完成")
+        except Exception as e:
+            #print(f"预处理失败: {e}")
+            return []
+
+        # ==========================
+        # KPU 推理
+        # ==========================
+        print("[2/3] 开始推理...")
+        try:
+            self.results = self.inference(self.tensors)
+            #print("[2/3]推理完成")
+        except Exception as e:
+            #print(f"推理失败: {e}")
+            return []
+
+        # ==========================
+        # 后处理
+        # ==========================
+        #print("[3/3] 开始后处理...")
+        try:
+            res = self.postprocess(self.results)
+            #print(f"[3/3]后处理完成，检测到 {len(res)} 个目标")
+        except Exception as e:
+            #print(f"后处理失败: {e}")
+            return []
+
+        print("========== run() 执行完毕 ==========\n")
+        return res
+
+    def reset_front_state(self):
+        self.front_result_a = None
+        self.front_last_result = None
+        self.front_stable_count = 0
+
+if __name__ == "__main__":
+
+    clock = time.clock()
+    # 初始化媒体管理器
+    #MediaManager.init()
+    # 启动传感器
+    # 显示模式，默认"hdmi",可以选择"hdmi"和"lcd"
+    display_mode="lcd"
+    if display_mode=="hdmi":
+        display_size=[1920,1080]
+    else:
+        display_size=[800,480]
+    rgb888p_size = [640, 360]
+    display_size=[800,480]
+
+    # 设置模型路径和其他参数
+    kmodel_path = "/sdcard/best.kmodel"
+    # 其它参数
+    confidence_threshold = 0.8
+    nms_threshold = 0.2
+    anchor_len = None
+    det_dim = 4
+    anchors_path = None
+    anchors = None
+    anchors = None
+    # 初始化自定义物体检测实例
+    yolo_det = YOLOv11App(kmodel_path, model_input_size=[320, 320], anchors=anchors, confidence_threshold=confidence_threshold, nms_threshold=nms_threshold, rgb888p_size=rgb888p_size, display_size=display_size, debug_mode=0)
+    yolo_det.config_preprocess()  # 配置预处理
+    sensor0 = None
+    sensor1 = None
+    sensor2 = None
+    try:
+        sensor1 = yolo_det.config_camera_and_display(1)#先配置一个摄像头0
+        Display.init(Display.ST7701, width=800, height=480, to_ide= True)#显示配置
+        MediaManager.init()#初始化媒体管理器
+        time.sleep_ms(200)#延时0.2s
+        sensor1.run()#开始运行
+        while True:
+            print("确认进入主循环")
+            os.exitpoint()                      # 检查是否有退出信号
+            #*****************************************************************************************************
+            clock.tick()
+            time.sleep_ms(10)
+            # 串口数据接收处理sensors
+            data = uart.read()
+            print("串口收发无误")
+            img1 = sensor1.snapshot(chn=CAM_CHN_ID_0)
+            img_ai = sensor1.snapshot(chn=CAM_CHN_ID_2)    #800*480
+            #dets = yolo_det.run(img_ai)
+            #print(f"检测到目标数量: {len(dets)}")  # 打印目标数量
+            #yolo_det.draw_number_sort(dets,0x03,5)#对ai的数据进行处理与排序，顺便返还数据
+            #yolo_det.draw_result(dets,img1)#处理结果并显示在lcd屏上
+            Display.show_image(img1, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
+            del img1
+            del img_ai
+            gc.collect()
+#               if list_flag is None:
+#                    continue
+            print(f"接收到数据: {data}")
+            #print(PIXEL_FORMAT_RGB_888_PLANAR)
+    # ===== 串口读取 =====
+            if data and len(data) == 8:
+                #根据不同的要求、场景来选择不同的摄像头
+                uart_flag = data
+                #uart.write(uart_flag)
+                #摄像头1
+                if uart_flag == b'\x02\x01\x00\x00\x00\x00\x00\x00':# 02 01 00 00 00 00 00 00
+                    sensor1.stop()
+                    sensor1.reset()
+                    #MediaManager.deinit()
+                    #Display.deinit()
+                    time.sleep_ms(50)
+                    sensor1 = yolo_det.config_camera_and_display(1)
+                    time.sleep_ms(200)
+                    sensor1.run()
+                    time.sleep_ms(200)
+                    while True:
+                        #拍摄并返还显示、ai处理的照片
+                        img_ai = sensor1.snapshot(chn=CAM_CHN_ID_2)  #640*360
+                        img_display = sensor1.snapshot(chn=CAM_CHN_ID_0)    #800*480
+                        print(1)
+                        dets = yolo_det.run(img_ai)#处理ai图
+                        yolo_det.draw_number_sort(dets,0x02 ,3)#对ai的数据进行处理与排序，顺便返还数据
+                        yolo_det.draw_result(dets,img_display)#处理结果并显示在lcd屏上
+                        Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
+                        del img_display
+                        del img_ai
+                        gc.collect()
+                        list_flag_1 = uart.read()
+                        if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
+                            #uart.write(list_flag_1)
+                            sensor1.stop()
+                            sensor1.reset()
+                            gc.collect()
+                            time.sleep_ms(50)
+                            sensor1 = yolo_det.config_camera_and_display(1)#先配置一个摄像头0
+                            sensor1.run()#开始运行
+                            break
+
+                #摄像头2
+                elif uart_flag == b'\x03\x01\x00\x00\x00\x00\x00\x00':
+                    sensor1.stop()
+                    #sensor1.reset()
+                    time.sleep_ms(50)
+                    yolo_det.reset_front_state()
+                    sensor2 = yolo_det.config_camera_and_display(2)
+                    time.sleep_ms(200)
+                    sensor2.run()
+                    time.sleep_ms(200)
+                    while True:
+                        #拍摄并返还显示、ai处理的照片
+                        img_ai = sensor2.snapshot(chn=CAM_CHN_ID_2)  #640*360
+                        img_display = sensor2.snapshot(chn=CAM_CHN_ID_0)    #800*480
+                        print(1)
+                        dets = yolo_det.run(img_ai)#处理ai图
+                        yolo_det.draw_number_sort(dets,0x03 ,5)#对ai的数据进行处理与排序，顺便返还数据
+                        yolo_det.draw_result(dets,img_display)#处理结果并显示在lcd屏上
+                        Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
+                        del img_display
+                        del img_ai
+                        gc.collect()
+                        list_flag_1 = uart.read()
+                        if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
+                            #uart.write(list_flag_1)
+                            sensor2.stop()
+                            sensor2.reset()
+                            gc.collect()
+                            time.sleep_ms(50)
+                            sensor1 = yolo_det.config_camera_and_display(1)#先配置一个摄像头0
+                            sensor1.run()#开始运行
+                            break
+
+                #摄像头0
+                elif uart_flag == b'\x01\x01\x00\x00\x00\x00\x00\x00':
+                    sensor1.stop()
+                    sensor1.reset()
+                    #MediaManager.deinit()
+                    #Display.deinit()
+                    time.sleep_ms(50)
+                    sensor0 = yolo_det.config_camera_and_display(0)
+                    #yolo_det.config_preprocess()  # 加这一行
+                    #Display.init(Display.ST7701, width=800, height=480, to_ide= True)#显示配置
+                    #MediaManager.init()
+                    time.sleep_ms(200)
+                    sensor0.run()
+                    time.sleep_ms(200)
+                    while True:
+                        #拍摄并返还显示、ai处理的照片
+                        img_ai = sensor0.snapshot(chn=CAM_CHN_ID_2)  #640*360
+                        img_display = sensor0.snapshot(chn=CAM_CHN_ID_0)    #800*480
+                        print(1)
+                        dets = yolo_det.run(img_ai)#处理ai图
+                        yolo_det.draw_number_sort(dets,0x01 ,5)#对ai的数据进行处理与排序，顺便返还数据
+                        yolo_det.draw_result(dets,img_display)#处理结果并显示在lcd屏上
+                        Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
+                        del img_display
+                        del img_ai
+                        gc.collect()
+                        list_flag_1 = uart.read()
+                        if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
+                            sensor0.stop()
+                            #sensor0.reset()
+                            del sensor0
+                            gc.collect()
+                            time.sleep_ms(50)
+                            sensor1 = yolo_det.config_camera_and_display(1)#先配置一个摄像头0
+                            sensor1.run()#开始运行
+                            break
+            #time.sleep_ms(40)
+            # list_flag_1 = uart.read()
+            # if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
+            #     break
+            #************************************************************************************************************
+    except KeyboardInterrupt as e:
+        print("用户终止：", e)  # 捕获键盘中断异常
+    except BaseException as e:
+        print(f"异常：{e}")  # 捕获其他异常
+    finally:
+#        if sensor0:
+#            sensor0.stop()
+#            sensor0.reset()
+        if sensor2:
+            sensor2.stop()
+            sensor2.reset()
+        yolo_det.deinit()                       # 反初始化
+        Display.deinit()
+        os.exitpoint(os.EXITPOINT_ENABLE_SLEEP)  # 启用睡眠模式的退出点
+        time.sleep_ms(100)  # 延迟100毫秒
+        MediaManager.deinit()
+        nn.shrink_memory_pool()
+        gc.collect()
+

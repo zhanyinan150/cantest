@@ -49,19 +49,25 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+/* appInitTask 属性: 放 USER CODE 区抗 CubeMX 重新生成覆盖 */
+osThreadId_t appInitTaskHandle;
+const osThreadAttr_t appInitTask_attributes = {
+  .name = "appInitTask",
+  .stack_size = 512 * 4,   /* 2KB: 跑 App_Init, printf→fputc→HAL_UART_Transmit 链深 */
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,   /* 2KB: defaultTask 跑 App_Init, printf→fputc→HAL_UART_Transmit 链深, 原512B溢出 */
+  .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+static void AppInitTask(void *argument);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -100,8 +106,12 @@ void MX_FREERTOS_Init(void) {
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* App_Init 在 StartDefaultTask 里调用(调度器启动后, osDelay 可用)。
-   * 曾尝试移到此处(调度器前), 但 HAL_Delay 在 osKernelStart 前卡死(uwTick 不递增), 回退。 */
+  /* appInitTask: 调度器启动后跑 App_Init(), 完成后 vTaskDelete 自删除。
+   * osThreadNew 在调度器前创建任务本身是安全的(同 defaultTask); 卡死的是
+   * "调度器前直接调用 App_Init"(其 HAL_Delay 依赖 uwTick), 故改为独立任务而非裸调用。
+   * 注: MX_USB_DEVICE_Init 已在 main.c USER CODE 2(调度器前)完成, 属硬件外设初始化,
+   * 不依赖 FreeRTOS, 故无需放任务上下文; App_Init 首行 osDelay(500) 等 PC 侧 CDC 枚举。 */
+  appInitTaskHandle = osThreadNew(AppInitTask, NULL, &appInitTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -122,17 +132,29 @@ void StartDefaultTask(void *argument)
   /* init code for USB_DEVICE */
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN StartDefaultTask */
-  /* 应用层初始化: 升降/步进/CAN/UART 子系统初始化编排 + 任务创建。
-   * 在调度器启动后执行(defaultTask 上下文), osDelay 可用。 */
-  App_Init();
-
-  /* defaultTask 保活 */
+  /* defaultTask 纯保活: 不承担任何初始化。
+   * 硬件外设初始化(含 USB)在 main.c, 应用初始化在 appInitTask, defaultTask 仅空转。
+   * 栈 128word(512B) 足够 osDelay。 */
   for (;;)
   {
     osDelay(1000);
   }
   /* USER CODE END StartDefaultTask */
 }
+
+/* USER CODE BEGIN AppInitTask */
+/**
+  * @brief  应用初始化任务: 调度器启动后执行 App_Init() → 自删除。
+  *         USB 已在 main.c(调度器前)初始化, App_Init 首行 osDelay(500) 等 PC 枚举 CDC。
+  *         完成后 vTaskDelete 释放栈与TCB。放 USER CODE 区抗 CubeMX 覆盖。
+  */
+static void AppInitTask(void *argument)
+{
+  (void)argument;
+  App_Init();
+  vTaskDelete(NULL);
+}
+/* USER CODE END AppInitTask */
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
