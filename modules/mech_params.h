@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    mech_params.h
-  * @brief   集中机械参数配置 (升降 / 底盘)
+  * @brief   集中机械参数配置 (升降 / 底盘 / X/Y轴)
   ******************************************************************************
   * 设计原则:
   *   1. 只放"原始机械量"(轮径、减速比、每转脉冲), 派生量(周长/半径)一律
@@ -26,7 +26,7 @@
 /* M2006 为 "P36" 减速电机, 自带 36:1 减速器, 电机轴->主动轮非直驱。
  * 位移换算必须计入减速比 (见 lift.c Lift_AngleToDisplacement)。 */
 
-#define LIFT_WHEEL_DIAMETER_M         0.18f     /* 主动轮直径 (m) */
+#define LIFT_WHEEL_DIAMETER_M         0.032f     /* 主动轮直径 (m) */
 /* 半径与周长均由直径派生, 勿手填 */
 #define LIFT_WHEEL_RADIUS_M           (LIFT_WHEEL_DIAMETER_M * 0.5f)
 #define LIFT_WHEEL_CIRCUMFERENCE_M    (MECH_PI * LIFT_WHEEL_DIAMETER_M)
@@ -71,5 +71,27 @@
 #define LATERAL_MICROSTEP                16      /* 驱动器细分 */
 #define LATERAL_PULSE_PER_REV            ((float)(LATERAL_STEPS_PER_REV * LATERAL_MICROSTEP))  /* 3200 */
 #define LATERAL_DIR_INVERT               0       /* 方向反转标志: 0=正常 1=翻转CW/CCW与编码器符号 */
+
+
+/* ================================================================== */
+/* ===== X/Y 轴: Emm_V5 步进电机 (CAN2, XYZ起重机机构) ============= */
+/* ================================================================== */
+/* X轴(单电机 ID3) + Y轴(双电机同步 ID1,2), 经减速箱驱动同步带/齿轮齿条。
+ * 位移换算见 modules/motor/motor.c::Motor_DistanceToClk。
+ * 电机轴->输出轴非直驱时必须填减速比, 否则距离换算错误。
+ * 直径按实物量取填入, 周长由 π×直径 派生, 勿手填。 */
+
+/* ---- X 轴 (单电机) ---- */
+#define MOTOR_X_WHEEL_DIAMETER_CM      1.4f    /* 主动轮直径(cm), 量实物填 (占位5.73->周长≈18) */
+#define MOTOR_X_WHEEL_CIRCUMFERENCE_CM (MECH_PI * MOTOR_X_WHEEL_DIAMETER_CM)  /* 派生: 每转行程 */
+#define MOTOR_X_GEAR_RATIO             1.0f     /* 减速比(电机轴:输出轴), 直驱=1 */
+
+/* ---- Y 轴 (双电机同步, 共用同一套参数) ---- */
+#define MOTOR_Y_WHEEL_DIAMETER_CM      10.0f    /* 主动轮直径(cm), 量实物填 */
+#define MOTOR_Y_WHEEL_CIRCUMFERENCE_CM (MECH_PI * MOTOR_Y_WHEEL_DIAMETER_CM)  /* 派生: 每转行程 */
+#define MOTOR_Y_GEAR_RATIO             1.0f     /* 减速比, 直驱=1 */
+
+/* Emm_V5 每转脉冲 (编码器4倍频, 一圈0-65535), X/Y 共用, 勿改 */
+#define MOTOR_XY_PULSE_PER_REV         65536.0f
 
 #endif /* __MECH_PARAMS_H */

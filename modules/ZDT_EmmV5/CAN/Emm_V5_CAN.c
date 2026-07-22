@@ -25,6 +25,11 @@ static bool encoder_initialized[8] = {false}; // 是否已初始化编码器值
 extern CANInstance *can_instance[];
 extern volatile uint8_t idx;
 
+/* 帧发送日志开关(默认关): 打开后每次下发一帧都 printf 实际 CAN ID/DLC/数据,
+ * 供逻辑分析仪对照。由 Emm_V5_CAN_SetFrameLog 切换, 测试任务打开, 不影响其他模块。 */
+static bool emm_v5_frame_log_enable = false;
+void Emm_V5_CAN_SetFrameLog(bool en) { emm_v5_frame_log_enable = en; }
+
 /**
  * @brief 注册X42电机CAN实例
  * @param motor_addr 电机地址(1-8)
@@ -33,24 +38,29 @@ extern volatile uint8_t idx;
  */
 CANInstance* Emm_V5_CAN_RegisterMotor(uint8_t motor_addr, CAN_HandleTypeDef *can_handle)
 {
+    // 参数合法性检查：电机地址有效范围为1-8
     if (motor_addr < 1 || motor_addr > 8) {
         LOGERROR("motor addr invalid: %d (valid 1-8)", motor_addr);
         return NULL;
     }
     
+    // 计算CAN报文ID：将电机地址左移8位作为高8位，低8位由分包索引填充
     uint32_t tx_id = (motor_addr << 8); // 发送ID: 高8位是电机地址
     uint32_t rx_id = (motor_addr << 8); // 接收ID: 高8位是电机地址
-      // 创建CAN配置
+
+    // 创建CAN配置
     CAN_Init_Config_s can_config = {
-        .can_handle = can_handle,
-        .tx_id = tx_id,
-        .rx_id = rx_id,
-        .use_ext_id = 1, // 使用扩展帧
-        .can_module_callback = NULL // 暂时不使用回调函数
+        .can_handle = can_handle,        // 绑定CAN外设句柄
+        .tx_id = tx_id,                  // 发送报文ID
+        .rx_id = rx_id,                  // 接收报文ID
+        .use_ext_id = 1,                 // 使用29位扩展帧格式
+        .can_module_callback = NULL      // 暂时不使用接收回调函数
     };
-      // 注册CAN实例
+
+    // 调用底层注册接口创建CAN实例
     CANInstance *instance = CANRegister(&can_config);
     
+    // 注册失败处理：记录错误日志并返回空指针
     if (instance == NULL) {
 #if CAN_CMD_LOG_LEVEL >= 1
         LOGERROR("register CAN instance failed, addr: 0x%02X", motor_addr);
@@ -58,6 +68,7 @@ CANInstance* Emm_V5_CAN_RegisterMotor(uint8_t motor_addr, CAN_HandleTypeDef *can
         return NULL;
     }
     
+    // 注册成功日志（需CAN_CMD_LOG_LEVEL >= 2）
 #if CAN_CMD_LOG_LEVEL >= 2
     LOGINFO("成功注册CAN实例，地址: 0x%02X, TX_ID: 0x%03X, RX_ID: 0x%03X", 
             motor_addr, tx_id, rx_id);
@@ -179,24 +190,63 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
     }
 #endif
 
-    uint8_t packet_index = 0;
-    uint16_t data_offset = 1;  // 跳过cmd[0]（地址），后续数据从cmd[1]开始
+    /* ===== 拆帧发送 (ZDT 第二代 CAN 协议, 见 X42S 手册 4.2.1) =====
+     * 扩展帧 ID = (addr<<8) | packet, packet 从 0 计数。
+     * 关键规则: "每包数据的第一个字节为功能码"。
+     *   - payload(cmd[1..len-1], 即 功能码+数据+校验) <= 8 字节: 单帧, 直接发, packet=0;
+     *   - payload > 8 字节: 拆包, 每包 = 功能码 cmd[1] + 后续最多 7 字节数据(从 cmd[2] 起切)。
+     * 修复: 原实现只按 8 字节裸切, 第 2 包起漏发功能码, 致位置命令(0xFD, 12字节payload)
+     *       等多帧命令拼包失败 -> 电机拒收/不动。单帧命令行为不变。 */
+    uint16_t payload_len  = len - 1;          /* 去掉地址后的长度 (功能码+数据+校验) */
+    uint8_t  func_code    = cmd[1];           /* 功能码, 多帧时每包都要带 */
+    uint8_t  multi        = (payload_len > 8);/* >8 字节需拆包 */
+    uint8_t  packet_index = 0;
+    uint16_t data_offset  = multi ? 2 : 1;    /* 多帧: 跳过地址+功能码; 单帧: 只跳地址 */
 
     while (data_offset < len)
     {
-        uint8_t frame_len = (len - data_offset > 8) ? 8 : (len - data_offset);
-        uint32_t can_id = (addr << 8) + ((len - 1 > 8) ? packet_index : 0);
+        uint8_t frame_len;
 
-        memcpy(target->tx_buff, &cmd[data_offset], frame_len);
-        
+        /* 组本帧数据到 tx_buff */
+        if (multi)
+        {
+            /* 多帧: 首字节为功能码, 其后最多 7 字节数据 */
+            uint8_t chunk = (len - data_offset > 7) ? 7 : (uint8_t)(len - data_offset);
+            target->tx_buff[0] = func_code;
+            memcpy(&target->tx_buff[1], &cmd[data_offset], chunk);
+            frame_len = chunk + 1;
+            data_offset += chunk;
+        }
+        else
+        {
+            /* 单帧: 数据即 cmd[1..len-1] */
+            frame_len = (uint8_t)payload_len;
+            memcpy(target->tx_buff, &cmd[data_offset], frame_len);
+            data_offset += frame_len;
+        }
+
+        uint32_t can_id = (addr << 8) + packet_index;
+
         // 设置CAN ID (根据use_ext_id设置StdId或ExtId)
         if (target->use_ext_id) {
             target->txconf.ExtId = can_id;
         } else {
             target->txconf.StdId = can_id;
         }
-        
+
         CANSetDLC(target, frame_len);
+
+        /* 帧发送日志: 打印即将下发的真实 CAN 帧(ID+DLC+数据), 供逻辑分析仪对照。
+         * 多帧命令的 packet_index 体现在 ID 低字节 (can_id = (addr<<8)+pkt)。 */
+        if (emm_v5_frame_log_enable)
+        {
+            printf("[CAN TX] addr=%u ID=0x%06lX DLC=%u pkt=%u DATA:",
+                   (unsigned)addr, (unsigned long)can_id,
+                   (unsigned)frame_len, (unsigned)packet_index);
+            for (uint8_t i = 0; i < frame_len; i++)
+                printf(" %02X", target->tx_buff[i]);
+            printf("\r\n");
+        }
 
         if (!CANTransmit(target, CAN_TX_TIMEOUT_MS))
         {
@@ -206,11 +256,10 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
             return false;
         }
 
-        data_offset += frame_len;
         packet_index++;
 
-        if (len - 1 > 8)
-            osDelay(CAN_SEND_DELAY_MS);
+        if (multi)
+            osDelay(CAN_SEND_DELAY_MS);  /* 多帧包间延时 */
     }
 
 #if CAN_CMD_LOG_LEVEL >= 2
@@ -299,7 +348,7 @@ void Emm_V5_CAN_Read_Sys_Params(uint8_t addr, SysParams_t s)
   * @brief    修改开环/闭环控制模式
   * @param    addr     ：电机地址
   * @param    svF      ：是否存储标志，false为不存储，true为存储
-  * @param    ctrl_mode：控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
+  * @param    ctrl_mode：控制模式（ZDT第二代协议, 见X42S手册5.6.7）: 0=开环模式, 1=闭环模式(默认01)。注意: 老 Emm_V5.0 为 0/1/2/3(2=闭环), 第二代仅 0/1, 勿传 2
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
   */
 void Emm_V5_CAN_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
@@ -311,7 +360,7 @@ void Emm_V5_CAN_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
   cmd[1] =  0x46;                       // 功能码
   cmd[2] =  0x69;                       // 辅助码
   cmd[3] =  svF;                        // 是否存储标志，false为不存储，true为存储
-  cmd[4] =  ctrl_mode;                  // 控制模式（对应屏幕上的P_Pul菜单），0是关闭脉冲输入引脚，1是开环模式，2是闭环模式，3是让En端口复用为多圈限位开关输入引脚，Dir端口复用为到位输出高电平功能
+  cmd[4] =  ctrl_mode;                  // 控制模式(ZDT第二代, 手册5.6.7): 0=开环, 1=闭环(默认01); 勿传老V5.0的2
   cmd[5] =  0x6B;                       // 校验字节
   
   // 发送命令
