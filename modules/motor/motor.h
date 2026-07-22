@@ -39,7 +39,7 @@
 #define MOTOR_Y_ADDR_2          2
 
 /* ---- 运动参数 (非机械量, 保留在本文件) ---- */
-#define MOTOR_XY_VEL_MAX        3000   /* X/Y 转速上限(RPM), Emm_V5 范围 0~5000 */
+#define MOTOR_XY_VEL_MAX        3000   /* X/Y 转速上限(RPM), Emm_V5 范围 0~3000 */
 #define MOTOR_XY_ACC_MAX        255    /* X/Y 加速度档位 0~255, 0=直接启动 */
 #define MOTOR_Z_TOLERANCE_CM    2.0f   /* Z轴到位容差(cm), 与 lift 一致 */
 #define MOTOR_XY_TIMEOUT_MS     10000  /* 到位超时(ms), X/Y 与 Z 取较大者 */

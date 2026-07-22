@@ -36,7 +36,7 @@
 // /* ==================== 运动参数 ==================== */
 // #define MOTOR_UART_ADDR              3       /* 3号电机 = X轴 (mech_params.h) */
 // #define TEST_DISTANCE_CM             10.0f   /* 每次移动距离(cm) */
-// #define TEST_VEL_RPM                 300     /* 转速(RPM), Emm_V5 范围 0~5000 */
+// #define TEST_VEL_RPM                 300     /* 转速(RPM), Emm_V5 范围 0~3000 */
 // #define TEST_ACC                     180     /* 加速度档位 0~255, 0=直接启动 */
 // #define TEST_MOVE_DELAY_MS           2000    /* 两次位置命令间隔(ms)
 //                                               * 10cm@300rpm≈0.5s, 留足余量 */

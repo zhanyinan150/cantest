@@ -34,7 +34,7 @@
 
 /* ==================== 运动参数 ==================== */
 #define TEST_DISTANCE_CM             50.0f  /* 每次移动距离(cm), 两电机相同 */
-#define TEST_VEL_RPM                 300    /* 转速(RPM), Emm_V5 范围 0~5000, 两电机相同 */
+#define TEST_VEL_RPM                 300    /* 转速(RPM), Emm_V5 范围 0~3000, 两电机相同 */
 #define TEST_ACC                     180    /* 加速度档位 0~255, 0=直接启动, 两电机相同 */
 #define TEST_MOVE_DELAY_MS           2000   /* 两次位置命令间隔(ms)
                                              * 50cm@300rpm≈318ms, 留足余量 */

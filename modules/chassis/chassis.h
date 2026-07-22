@@ -37,7 +37,7 @@
 /* 默认 ramp 时间(ms): 0→目标转速的余弦S形加速时间 */
 #define CHASSIS_DEFAULT_RAMP_MS   1000
 
-/* 转速上限(RPM), Emm_V5 速度模式范围 0~5000 */
+/* 转速上限(RPM), Emm_V5 速度模式范围 0~3000 */
 #define CHASSIS_MAX_RPM           3000
 
 /* 机械参数 (轮径/每转脉冲/周长) 统一在 mech_params.h 定义, 周长由 π×轮径 派生 */
