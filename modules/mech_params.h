@@ -91,7 +91,11 @@
 #define MOTOR_Y_WHEEL_CIRCUMFERENCE_CM (MECH_PI * MOTOR_Y_WHEEL_DIAMETER_CM)  /* 派生: 每转行程 */
 #define MOTOR_Y_GEAR_RATIO             1.0f     /* 减速比, 直驱=1 */
 
-/* Emm_V5 每转脉冲 (编码器4倍频, 一圈0-65535), X/Y 共用, 勿改 */
-#define MOTOR_XY_PULSE_PER_REV         65536.0f
+/* Emm_V5 位置模式 FD 的 clk 单位 = 细分脉冲 (非编码器值65536!)
+ * 16细分下 3200脉冲/圈 (200步×16细分), X/Y 共用。
+ * 改细分时同步改 MOTOR_XY_MICROSTEP, 每转脉冲自动 = 200×细分。 */
+#define MOTOR_XY_STEPS_PER_REV        200       /* 1.8°电机每转步数 (360/1.8) */
+#define MOTOR_XY_MICROSTEP            16        /* 驱动器细分 (MStep菜单), 须与电机设置一致 */
+#define MOTOR_XY_PULSE_PER_REV        ((float)(MOTOR_XY_STEPS_PER_REV * MOTOR_XY_MICROSTEP))  /* 3200 脉冲/圈 */
 
 #endif /* __MECH_PARAMS_H */
