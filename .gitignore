@@ -15,6 +15,7 @@ MDK-ARM/*.uvguix.*
 MDK-ARM/uv4.log*
 MDK-ARM/.vscode/*.log*
 MDK-ARM/build_log.txt
+MDK-ARM/buildlog.txt
 MDK-ARM/RTE/
 
 # CubeMX
