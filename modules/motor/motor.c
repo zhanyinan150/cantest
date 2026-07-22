@@ -19,8 +19,12 @@
 #include "stdio.h"        /* sscanf */
 
 /* 注意: 不可 #include "Emm_V5.h" (UART版), 其 S_VER 等枚举与 Emm_V5_CAN.h 冲突,
- *       app_init.c 已有同样约束。本模块只用 CAN 版驱动。
+ *       app_init.c 已有同样约束。Y轴仍用 CAN 版驱动(Emm_V5_CAN.h)。
+ * X轴改用 UART5 (Emm_V5.c) 通信, 故对所需函数作前向声明(不可 include Emm_V5.h)。
+ * (bool 已由 motor.h -> <stdbool.h> 引入)
  * 机械参数(周长/减速比/每转脉冲)由 motor.h -> mech_params.h 提供, 不在本文件定义。 */
+extern void Emm_V5_En_Control(uint8_t addr, bool state, bool snF);
+extern void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF);
 
 /* ==================== 内部辅助 ==================== */
 
@@ -68,18 +72,16 @@ static uint8_t Motor_ClampAcc(uint8_t acc)
  * @brief  使能 X/Y 轴步进电机 (Z 轴由 Lift_Init 内部 DJIMotorEnable 使能)
  * @note   X(3) + Y双电机(1,2) 共三只步进, 需在 Emm_V5_CAN_Init 注册后调用
  *         Y双电机使能固定 snF=true 同步预存, 末尾广播 Synchronous_motion 同时触发
- *         末尾注册 VOFA 命令(mxyz), 串口发命令即可触发 Motor_XYZ
+ *         (mxyz 命令注册已随 cmd_mxyz 删除而移除, CommandTask 停用)
  */
 void Motor_Init(void)
 {
-    Emm_V5_CAN_En_Control(MOTOR_X_ADDR,   true, false);  /* X单电机, 直接使能 */
+    Emm_V5_En_Control(MOTOR_X_ADDR,   true, false);  /* X单电机改用 UART5 (Emm_V5.c) */
     /* Y双电机使能固定 snF=true 同步: 预存后由 Synchronous_motion 同时触发,
      * 保证两电机同时上电, 避免单边先使能导致机构受力不均。 */
     Emm_V5_CAN_En_Control(MOTOR_Y_ADDR_1, true, true);
     Emm_V5_CAN_En_Control(MOTOR_Y_ADDR_2, true, true);
     Emm_V5_CAN_Synchronous_motion(0);  /* 广播触发 Y1/Y2 同步使能 */
-
-    Motor_RegisterCommands();  /* 注册 mxyz 命令到 bsp/cmd */
 }
 
 /**
@@ -94,8 +96,6 @@ void Motor_Init(void)
  * @param  y_acc       Y轴加速度档位 0~255, 0=直接启动, 双电机共用
  * @param  y_distance  Y轴移动距离(cm), >0 有效, 0=该轴不动, 双电机发相同脉冲
  * @param  z_dir       Z轴升降方向 (0=上, 1=下)
- * @param  z_vel       Z轴转速, 保留参数, lift 不支持(由其 PID 决定速度), 忽略
- * @param  z_acc       Z轴加速度, 保留参数, lift 不支持, 忽略
  * @param  z_distance  Z轴移动距离(cm), >0 有效, 0=不动
  * @return 0=全轴到位(X&&Y1&&Y2&&Z), -1=超时/堵转
  * @note   - Y轴双电机(ID 1,2)固定 snF=true 多机同步走直线: 两电机发完全相同的
@@ -108,13 +108,15 @@ void Motor_Init(void)
  */
 int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
               uint8_t y_dir, uint16_t y_vel, uint8_t y_acc, float y_distance,
-              uint8_t z_dir, uint16_t z_vel, uint8_t z_acc, float z_distance)
+              uint8_t z_dir, float z_distance)
 {
-    (void)z_vel; (void)z_acc;  /* lift 不支持外部速度/加速度, 由其 PID 决定 */
 
     bool x_active = (x_distance > 0.0f);
     bool y_active = (y_distance > 0.0f);
     bool z_active = (z_distance > 0.0f);
+
+    printf("[motor] Motor_XYZ start: x=%d y=%d z=%d (1=active)\r\n",
+           (int)x_active, (int)y_active, (int)z_active);
 
     uint16_t vel_x = Motor_ClampVel(x_vel);
     uint8_t  acc_x = Motor_ClampAcc(x_acc);
@@ -132,6 +134,7 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         else
             Lift_Down(z_distance); /* 1=下 */
         z_target_cm = Lift_GetStatus()->target_displacement;
+        printf("[motor] Z start dir=%d target=%.2fcm\r\n", (int)z_dir, z_target_cm);
     }
     osDelay(20);
         /* ===== 1. 启动 X/Y 步进 (CAN2) =====
@@ -143,7 +146,10 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
     if (x_active)
     {
         uint32_t clk_x = Motor_DistanceToClk(x_distance, MOTOR_X_WHEEL_CIRCUMFERENCE_CM, MOTOR_X_GEAR_RATIO);
-        Emm_V5_CAN_Pos_Control(MOTOR_X_ADDR, x_dir, vel_x, acc_x, clk_x, false, false);
+        Emm_V5_Pos_Control(MOTOR_X_ADDR, x_dir, vel_x, acc_x, clk_x, false, false);  /* X改用 UART5 (Emm_V5.c) */
+        printf("[motor] X sent clk=%lu vel=%u acc=%u (UART5)\r\n",
+               (unsigned long)clk_x, (unsigned)vel_x, (unsigned)acc_x);
+        osDelay(20);
     }
     if (y_active)
     {
@@ -151,14 +157,17 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         /* Y1/Y2 固定 snF=true 同步预存, 配合 Synchronous_motion 同时启动。
          * 若两电机安装方向镜像, 将其中一行的 y_dir 改为 (!y_dir)。 */
         Emm_V5_CAN_Pos_Control(MOTOR_Y_ADDR_1, y_dir, vel_y, acc_y, clk_y, false, true);
-        Emm_V5_CAN_Pos_Control(MOTOR_Y_ADDR_2, y_dir, vel_y, acc_y, clk_y, false, true);
+        Emm_V5_CAN_Pos_Control(MOTOR_Y_ADDR_2, !y_dir, vel_y, acc_y, clk_y, false, true);
     
         Emm_V5_CAN_Synchronous_motion(0);  /* 广播地址0, 触发所有预存电机同步启动 */
+        printf("[motor] Y sent clk=%lu vel=%u acc=%u Y1dir=%d Y2dir=%d (CAN2+sync)\r\n",
+               (unsigned long)clk_y, (unsigned)vel_y, (unsigned)acc_y,
+               (int)y_dir, (int)(!y_dir));
 		}
 
     /* ===== 3. 轮询等待全轴到位 (osDelay, 不忙等) =====
      * Y到位 = Y1 && Y2 均到位(双电机都 ARRIVED) */
-    bool x_done = !x_active;
+    bool x_done = true;  /* X改用 UART5, 发送后 osDelay 等待, 不轮询到位 */
     bool y1_done = !y_active, y2_done = !y_active;
     bool z_done = !z_active;
     uint32_t start = osKernelGetTickCount();
@@ -167,18 +176,9 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
 
     for (;;)
     {
-        /* X/Y 到位检测: S_FLAG &0x02=到位 &0x04=堵转 &0x08=堵转保护。
+        /* Y 到位检测(X轴改用 UART5, 无到位查询, 已 osDelay 等待, x_done 恒 true):
+         * S_FLAG &0x02=到位 &0x04=堵转 &0x08=堵转保护。
          * Read_Flag 阻塞等待该电机响应(≤100ms), 失败返回-1下轮重试。 */
-        if (x_active && !x_done)
-        {
-            int32_t f = Emm_V5_CAN_Read_Flag(MOTOR_X_ADDR);
-            if (f >= 0)
-            {
-                if (f & (EMM_FLAG_STALL | EMM_FLAG_STALL_PROT))
-                { LOGERROR("[motor] X堵转 flag=0x%X", (unsigned)f); return -1; }
-                if (f & EMM_FLAG_ARRIVED) x_done = true;
-            }
-        }
         if (y_active && !y1_done)
         {
             int32_t f = Emm_V5_CAN_Read_Flag(MOTOR_Y_ADDR_1);
@@ -213,43 +213,10 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         if ((osKernelGetTickCount() - start) >= timeout)
         {
             LOGERROR("[motor] XYZ超时 x=%d y1=%d y2=%d z=%d",
-                     (int)x_done, (int)y1_done, (int)y2_done, (int)z_done);
+                    (int)x_done, (int)y1_done, (int)y2_done, (int)z_done);
             return -1;
         }
         osDelay(MOTOR_POLL_PERIOD_MS);
     }
 }
 
-/* ==================== VOFA 命令 ====================
- * 数据流: USART1 中断拼行 -> 命令队列 -> CommandTask -> CMD_Dispatch
- *         -> cmd_mxyz -> Motor_XYZ (阻塞, 在 CommandTask 上下文执行)
- * 执行期间 CommandTask 阻塞, 无法处理新命令(与 chassis mfwd/mrev 一致)。 */
-
-/**
- * @brief  mxyz 命令 handler: 解析12参数调用 Motor_XYZ
- * @param  arg 命令名后的参数串, 格式:
- *         "xdir xvel xacc xdist ydir yvel yacc ydist zdir zvel zacc zdist"
- *         例: "1 300 180 10 1 300 180 10 0 0 0 5"  (X右10cm + Y前10cm + Z升5cm)
- *         某轴不动作: 该轴 distance 传 0 (vel/acc 可随意, 会被忽略或跳过)
- */
-static void cmd_mxyz(const char *arg)
-{
-    uint8_t  x_dir, x_acc, y_dir, y_acc, z_dir, z_acc;
-    uint16_t x_vel, y_vel, z_vel;
-    float    x_dist, y_dist, z_dist;
-    if (sscanf(arg, "%hhu %hu %hhu %f %hhu %hu %hhu %f %hhu %hu %hhu %f",
-               &x_dir, &x_vel, &x_acc, &x_dist,
-               &y_dir, &y_vel, &y_acc, &y_dist,
-               &z_dir, &z_vel, &z_acc, &z_dist) == 12)
-    {
-        Motor_XYZ(x_dir, x_vel, x_acc, x_dist,
-                  y_dir, y_vel, y_acc, y_dist,
-                  z_dir, z_vel, z_acc, z_dist);
-    }
-}
-
-void Motor_RegisterCommands(void)
-{
-    /* 注册失败(表满)断言暴露, 避免命令静默丢失 */
-    configASSERT(CMD_Register("mxyz", cmd_mxyz) == 0);
-}

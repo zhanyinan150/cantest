@@ -45,32 +45,15 @@
  *
  * ⚠️ 位置模式 FD 命令的 clk 单位 = 细分脉冲, 不是编码器值!
  *   - 发送位置命令 FD: clk = 细分脉冲数, 16细分下 3200脉冲/圈
- *     (Emm_V5 说明书 6.3.1: "16细分下发送3200个脉冲电机旋转一圈")
  *   - 读取编码器反馈 0x31/0x33: 返回值 0-65535 表示一圈 (编码器4倍频)
- *   两者单位不同, 勿混用。CHASSIS_PULSE_PER_REV 用于发送命令, 故=3200。
- *   改细分时同步改 CHASSIS_MICROSTEP, 每转脉冲自动 = 200×细分。 */
+ *   两者单位不同, 勿混用。CHASSIS_PULSE_PER_REV 用于发送命令, 故=3200。 */
 
 #define CHASSIS_WHEEL_DIAMETER_CM     18.0f     /* 轮径 (cm) */
 /* 周长由直径派生, 勿手填 */
 #define CHASSIS_WHEEL_CIRCUMFERENCE_CM  (MECH_PI * CHASSIS_WHEEL_DIAMETER_CM)
-
 #define CHASSIS_STEPS_PER_REV         200       /* 1.8°电机每转步数 (360/1.8) */
 #define CHASSIS_MICROSTEP             16        /* 驱动器细分 (MStep菜单), 须与电机设置一致 */
 #define CHASSIS_PULSE_PER_REV         ((float)(CHASSIS_STEPS_PER_REV * CHASSIS_MICROSTEP))  /* 3200 脉冲/圈 */
-
-
-/* ================================================================== */
-/* ===== 横移机构: 单 Emm_V5 步进 + 同步带同步轮 =================== */
-/* ================================================================== */
-/* Emm_V5 步进闭环, 电机轴直驱同步轮(无减速), 同步带带动横向移动。
- * 位置模式 FD 命令 clk 单位 = 细分脉冲 (同底盘, 16细分下 3200/圈)。
- * ⚠️ LATERAL_PULLEY_CIRCUMFERENCE_CM 为占位值, 实测同步轮周长后改此处。
- * ⚠️ LATERAL_DIR_INVERT: 若实际方向与指令相反(上升命令却下降), 改 1 翻转。 */
-#define LATERAL_PULLEY_CIRCUMFERENCE_CM  6.0f    /* 同步轮周长 (cm) 占位值, 待实测 */
-#define LATERAL_STEPS_PER_REV            200     /* 1.8°电机每转步数 */
-#define LATERAL_MICROSTEP                16      /* 驱动器细分 */
-#define LATERAL_PULSE_PER_REV            ((float)(LATERAL_STEPS_PER_REV * LATERAL_MICROSTEP))  /* 3200 */
-#define LATERAL_DIR_INVERT               0       /* 方向反转标志: 0=正常 1=翻转CW/CCW与编码器符号 */
 
 
 /* ================================================================== */
@@ -91,7 +74,11 @@
 #define MOTOR_Y_WHEEL_CIRCUMFERENCE_CM (MECH_PI * MOTOR_Y_WHEEL_DIAMETER_CM)  /* 派生: 每转行程 */
 #define MOTOR_Y_GEAR_RATIO             1.0f     /* 减速比, 直驱=1 */
 
-/* Emm_V5 每转脉冲 (编码器4倍频, 一圈0-65535), X/Y 共用, 勿改 */
-#define MOTOR_XY_PULSE_PER_REV         65536.0f
+/* Emm_V5 位置模式 FD 的 clk 单位 = 细分脉冲 (非编码器值65536!)
+ * 16细分下 3200脉冲/圈 (200步×16细分), X/Y 共用。
+ * 改细分时同步改 MOTOR_XY_MICROSTEP, 每转脉冲自动 = 200×细分。 */
+#define MOTOR_XY_STEPS_PER_REV        200       /* 1.8°电机每转步数 (360/1.8) */
+#define MOTOR_XY_MICROSTEP            16        /* 驱动器细分 (MStep菜单), 须与电机设置一致 */
+#define MOTOR_XY_PULSE_PER_REV        ((float)(MOTOR_XY_STEPS_PER_REV * MOTOR_XY_MICROSTEP))  /* 3200 脉冲/圈 */
 
 #endif /* __MECH_PARAMS_H */

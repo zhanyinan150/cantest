@@ -212,7 +212,7 @@ void Emm_V5_CAN2_En_Control(uint8_t addr, bool state, bool snF)
 /**
   * @brief  速度模式
   * @param  dir 0=CW, 其余=CCW
-  * @param  vel 0~5000 RPM
+  * @param  vel 0~3000 RPM
   * @param  acc 0~255, 0=直接启动
   * @param  snF 多机同步标志
   */
@@ -233,7 +233,7 @@ bool Emm_V5_CAN2_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t ac
 /**
   * @brief  位置模式
   * @param  dir 0=CW, 其余=CCW
-  * @param  vel 0~5000 RPM
+  * @param  vel 0~3000 RPM
   * @param  acc 0~255, 0=直接启动
   * @param  clk 脉冲数 (0 ~ 2^32-1)
   * @param  raF false=相对运动, true=绝对运动

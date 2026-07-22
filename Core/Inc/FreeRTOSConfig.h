@@ -68,7 +68,7 @@
 #define configTICK_RATE_HZ                       ((TickType_t)1000)
 #define configMAX_PRIORITIES                     ( 56 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)30720)
+#define configTOTAL_HEAP_SIZE                    ((size_t)15360)
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configUSE_TRACE_FACILITY                 1
 #define configUSE_16_BIT_TICKS                   0
@@ -77,7 +77,6 @@
 #define configUSE_RECURSIVE_MUTEXES              1
 #define configUSE_COUNTING_SEMAPHORES            1
 #define configUSE_PORT_OPTIMISED_TASK_SELECTION  0
-#define configCHECK_FOR_STACK_OVERFLOW           2   /* 栈溢出检测: method2, 任务切换时校验栈指针+填充 */
 /* USER CODE BEGIN MESSAGE_BUFFER_LENGTH_TYPE */
 /* Defaults to size_t for backward compatibility, but can be changed
    if lengths will always be less than the number of bytes in a size_t. */
@@ -153,6 +152,10 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 header file. */
 /* USER CODE BEGIN 1 */
 #define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+/* 栈溢出检测: freertos.c 的 vApplicationStackOverflowHook 注释声称 =2, 但本文件
+ * 原本未定义(实为 0, 关闭), 致 defaultTask(512B) 跑 App_Init 栈溢出时静默 HardFault,
+ * 无打印无动作。开启后溢出会触发 hook(freertos.c) 打印任务名定位。 */
+#define configCHECK_FOR_STACK_OVERFLOW 2
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS

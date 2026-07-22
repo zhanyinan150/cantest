@@ -6,9 +6,9 @@
 /**********************************************************
 ***	Emm_V5.0步进闭环控制例程 (UART串口通讯版, 横移电机)
 ***	编写作者：ZHANGDATOU
-***	技术支持：张大头闭环技术
+***	技术支持：张大头闭环伺服
 ***	淘宝店铺：https://zhangdatou.taobao.com
-***	CSDN博客：https://blog.csdn.net/zhangdatou666
+***	CSDN博客：http s://blog.csdn.net/zhangdatou666
 ***	qq交流群：262438510
 ***
 *** ===== 电机菜单设置 (首次上电在小屏幕配置, 详见说明书第4章) =====
@@ -31,12 +31,16 @@
 *** 加速度   : 0~255档, 0=直接启动; 公式 t=(256-acc)*50us 每1RPM
 *** 注意     : 本文件函数通过 UART5 (huart5) 发送, 供横移模块使用
 **********************************************************/
-
-#define		ABS(x)		((x) > 0 ? (x) : -(x))
+extern uint8_t motor_flag;
+extern uint8_t rx_buf[5];
+extern  int32_t current_encoder;
+extern  int32_t sum_encoder;
+extern  int32_t last_encoder;
+#define		ABS(x)		((x) > 0 ? (x) : -(x)) 
 
 typedef enum {
 	S_VER   = 0,			/* 读取固件版本和对应的硬件版本 */
-	S_RL    = 1,			/* 读取相电阻和相电感 */
+	S_RL    = 1,			/* 读取读取相电阻和相电感 */
 	S_PID   = 2,			/* 读取PID参数 */
 	S_VBUS  = 3,			/* 读取总线电压 */
 	S_CPHA  = 5,			/* 读取相电流 */
@@ -64,14 +68,27 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
 void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, uint32_t clk, bool raF, bool snF); // 位置模式控制
 void Emm_V5_Stop_Now(uint8_t addr, bool snF); // 让电机立即停止运动
 void Emm_V5_Synchronous_motion(uint8_t addr); // 触发多机同步开始运动
-void Emm_V5_Origin_Set_O(uint8_t addr, bool svF); // 设置单圈回零的零点位置
+void Emm_V5_Origin_Set_O(uint8_t addr, bool svF); // 设置挡圈回零的零点位置
 void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t o_dir, uint16_t o_vel, uint32_t o_tm, uint16_t sl_vel, uint16_t sl_ma, uint16_t sl_ms, bool potF); // 修改回零参数
 void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF); // 发送命令触发回零
 void Emm_V5_Origin_Interrupt(uint8_t addr); // 强制中断并退出回零
 void Emm_V5_Get_All_Encoders(int32_t encoder[4]);
 void Emm_V5_Init(void);
-void Emm_V5_UART_RxCpltCallback(UART_HandleTypeDef *huart);
 void Emm_V5_Reset_Encoder_Accumulation(uint8_t id);
-int32_t Emm_V5_Read_Encoder(uint8_t addr);  /* 读取单电机编码器累计值 (多圈, 含回绕处理) */
 void X_vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bool snF);
+
+void Motor_VelStraight(uint8_t Speed,uint8_t acc);
+void Motor_Velturnleft(uint8_t Speed,uint8_t acc);
+void Motor_Velturnright(uint8_t Speed,uint8_t acc);
+void Motor_VelTurnLeftAround(uint8_t Speed,uint8_t acc);
+void Motor_VelTurnRightAround(uint8_t Speed,uint8_t acc);
+void Motor_VelTurnBack(uint8_t Speed,uint8_t acc);
+void Motor_SetStop(void);
+int32_t Emm_V5_Read_Encoder(uint8_t addr);
+void Emm_V5_Get_All_Encoders(int32_t encoder[4]);
+void  Motor_Read_Encoder(uint8_t addr );
+//void  Motor_Encoder_Reset(void);
+//float  Motor_Encoder_Distance(void);
+
+
 #endif

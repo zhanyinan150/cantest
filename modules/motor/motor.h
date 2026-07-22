@@ -39,7 +39,7 @@
 #define MOTOR_Y_ADDR_2          2
 
 /* ---- 运动参数 (非机械量, 保留在本文件) ---- */
-#define MOTOR_XY_VEL_MAX        3000   /* X/Y 转速上限(RPM), Emm_V5 范围 0~5000 */
+#define MOTOR_XY_VEL_MAX        3000   /* X/Y 转速上限(RPM), Emm_V5 范围 0~3000 */
 #define MOTOR_XY_ACC_MAX        255    /* X/Y 加速度档位 0~255, 0=直接启动 */
 #define MOTOR_Z_TOLERANCE_CM    2.0f   /* Z轴到位容差(cm), 与 lift 一致 */
 #define MOTOR_XY_TIMEOUT_MS     10000  /* 到位超时(ms), X/Y 与 Z 取较大者 */
@@ -65,8 +65,6 @@ void Motor_Init(void);
   * @param  y_acc       Y轴加速度档位 0~255, 0=直接启动, 双电机共用
   * @param  y_distance  Y轴移动距离(cm), >0 有效, 0=该轴不动, 双电机发相同脉冲
   * @param  z_dir       Z轴升降方向 (0=上, 1=下)
-  * @param  z_vel       Z轴转速, 保留参数, lift 不支持(由其 PID 决定速度), 忽略
-  * @param  z_acc       Z轴加速度, 保留参数, lift 不支持, 忽略
   * @param  z_distance  Z轴移动距离(cm), >0 有效, 0=不动
   * @return 0=全轴到位(X&&Y1&&Y2&&Z), -1=超时/堵转
   * @note   - Y轴双电机(ID 1,2)固定 snF=true 多机同步走直线: 两电机发完全相同的
@@ -79,17 +77,16 @@ void Motor_Init(void);
   */
 int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
               uint8_t y_dir, uint16_t y_vel, uint8_t y_acc, float y_distance,
-              uint8_t z_dir, uint16_t z_vel, uint8_t z_acc, float z_distance);
+              uint8_t z_dir, float z_distance);
 
 /**
   * @brief  注册 Motor VOFA 命令到 bsp/cmd 注册表
   * @note   在 Motor_Init() 内自动调用。注册命令:
-  *         mxyz xdir xvel xacc xdist ydir yvel yacc ydist zdir zvel zacc zdist
-  *         12个参数依次对应 Motor_XYZ, 某轴不动作传 0。例:
-  *         mxyz 1 300 180 10 1 300 180 10 0 0 0 5
+  *         mxyz xdir xvel xacc xdist ydir yvel yacc ydist zdir zdist
+  *         10个参数依次对应 Motor_XYZ, 某轴不动作传 0。例:
+  *         mxyz 1 300 180 10 1 300 180 10 0 5
   *         (X右10cm + Y前10cm + Z升5cm, 三轴联动)
   *         执行期间 CommandTask 阻塞(与 chassis mfwd/mrev 一致)。
   */
-void Motor_RegisterCommands(void);
 
 #endif /* __MOTOR_H */
