@@ -345,7 +345,7 @@ void Emm_V5_CAN_En_Control(uint8_t addr, bool state, bool snF)
   * @brief    速度模式
   * @param    addr：电机地址
   * @param    dir ：方向       ，0为CW，其余值为CCW
-  * @param    vel ：速度       ，范围0 - 5000RPM
+  * @param    vel ：速度       ，范围0 - 3000RPM (Emm固件F6, 0x0BB8)
   * @param    acc ：加速度     ，范围0 - 255，注意：0是直接启动
   * @param    snF ：多机同步标志，false为不启用，true为启用
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
@@ -372,7 +372,7 @@ bool Emm_V5_CAN_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc
   * @brief    位置模式
   * @param    addr：电机地址
   * @param    dir ：方向        ，0为CW，其余值为CCW
-  * @param    vel ：速度(RPM)   ，范围0 - 5000RPM
+  * @param    vel ：速度(RPM)   ，范围0 - 3000RPM (Emm固件F6, 0x0BB8)
   * @param    acc ：加速度      ，范围0 - 255，注意：0是直接启动
   * @param    clk ：脉冲数      ，范围0- (2^32 - 1)个
   * @param    raF ：相位/绝对标志，false为相对运动，true为绝对值运动

@@ -156,7 +156,7 @@ void Emm_V5_En_Control(uint8_t addr, bool state, bool snF)
   * @brief    速度模式
   * @param    addr：电机地址
   * @param    dir ：方向       ，0为CW，其余值为CCW
-  * @param    vel ：速度       ，范围0 - 5000RPM
+  * @param    vel ：速度       ，范围0 - 3000RPM (Emm固件F6, 0x0BB8)
   * @param    acc ：加速度     ，范围0 - 255，注意：0是直接启动
   * @param    snF ：多机同步标志，false为不启用，true为启用
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
@@ -185,7 +185,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   * @brief    位置模式
   * @param    addr：电机地址
   * @param    dir ：方向        ，0为CW，其余值为CCW
-  * @param    vel ：速度(RPM)   ，范围0 - 5000RPM
+  * @param    vel ：速度(RPM)   ，范围0 - 3000RPM (Emm固件F6, 0x0BB8)
   * @param    acc ：加速度      ，范围0 - 255，注意：0是直接启动
   * @param    clk ：脉冲数      ，范围0- (2^32 - 1)个
   * @param    raF ：相位/绝对标志，false为相对运动，true为绝对值运动
@@ -356,8 +356,8 @@ void Emm_V5_Origin_Interrupt(uint8_t addr)
   cmd[2] =  0x48;                       // 辅助码
   cmd[3] =  0x6B;                       // 校验字节
 
-  // 发送命令
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 5);
+  // 发送命令 (4字节: addr+9C+48+6B, 勿多发0x00否则被当广播地址)
+  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, 4);
 }
 
 /**

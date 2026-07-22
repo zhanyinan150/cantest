@@ -76,7 +76,7 @@ static uint8_t chassis_telemetry_getter(float *out, uint8_t max);
 static void chassis_send(float vel_rpm)
 {
     float av = fabsf(vel_rpm);
-    if (av > 5000.0f) av = 5000.0f;
+    if (av > (float)CHASSIS_MAX_RPM) av = (float)CHASSIS_MAX_RPM;  /* Emm固件F6速度上限3000RPM(0x0BB8) */
     uint16_t vel = (uint16_t)av;
 
     uint8_t dirL, dirR;
@@ -271,8 +271,8 @@ int Chassis_MoveDistanceAsync(float distance_cm, uint16_t vel_rpm)
         return -1;
     if (vel_rpm == 0)
         vel_rpm = CHASSIS_POS_VEL_RPM;
-    if (vel_rpm > 5000)
-        vel_rpm = 5000;
+    if (vel_rpm > CHASSIS_MAX_RPM)
+        vel_rpm = CHASSIS_MAX_RPM;
 
     /* 1. 停速度模式, 避免与位置命令冲突 */
     Chassis_StopNow();

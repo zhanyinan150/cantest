@@ -23,7 +23,7 @@
 /* ================================================================== */
 /* ===== 升降机构: 单 M2006 减速电机 + 主动轮提升 ================== */
 /* ================================================================== */
-/* M2006 为 "P36" 减速电机, 自带 36:1 减速器, 电机轴→主动轮非直驱。
+/* M2006 为 "P36" 减速电机, 自带 36:1 减速器, 电机轴->主动轮非直驱。
  * 位移换算必须计入减速比 (见 lift.c Lift_AngleToDisplacement)。 */
 
 #define LIFT_WHEEL_DIAMETER_M         0.18f     /* 主动轮直径 (m) */
@@ -42,23 +42,34 @@
 /* ===== 底盘: 双 Emm_V5 步进轮, 电机轴直驱轮子 (无减速) =========== */
 /* ================================================================== */
 /* Emm_V5 为步进闭环驱动, 电机轴直驱轮子, 减速比=1, 故无 GEAR_RATIO 宏。
- * 位置命令 clk 单位 = 编码器 4 倍频后的每转脉冲数 (65536)。 */
+ *
+ * ⚠️ 位置模式 FD 命令的 clk 单位 = 细分脉冲, 不是编码器值!
+ *   - 发送位置命令 FD: clk = 细分脉冲数, 16细分下 3200脉冲/圈
+ *     (Emm_V5 说明书 6.3.1: "16细分下发送3200个脉冲电机旋转一圈")
+ *   - 读取编码器反馈 0x31/0x33: 返回值 0-65535 表示一圈 (编码器4倍频)
+ *   两者单位不同, 勿混用。CHASSIS_PULSE_PER_REV 用于发送命令, 故=3200。
+ *   改细分时同步改 CHASSIS_MICROSTEP, 每转脉冲自动 = 200×细分。 */
 
 #define CHASSIS_WHEEL_DIAMETER_CM     18.0f     /* 轮径 (cm) */
 /* 周长由直径派生, 勿手填 */
 #define CHASSIS_WHEEL_CIRCUMFERENCE_CM  (MECH_PI * CHASSIS_WHEEL_DIAMETER_CM)
-#define CHASSIS_PULSE_PER_REV         65536.0f  /* Emm_V5 每转脉冲 (编码器4倍频, 一圈0-65535) */
+
+#define CHASSIS_STEPS_PER_REV         200       /* 1.8°电机每转步数 (360/1.8) */
+#define CHASSIS_MICROSTEP             16        /* 驱动器细分 (MStep菜单), 须与电机设置一致 */
+#define CHASSIS_PULSE_PER_REV         ((float)(CHASSIS_STEPS_PER_REV * CHASSIS_MICROSTEP))  /* 3200 脉冲/圈 */
 
 
 /* ================================================================== */
 /* ===== 横移机构: 单 Emm_V5 步进 + 同步带同步轮 =================== */
 /* ================================================================== */
 /* Emm_V5 步进闭环, 电机轴直驱同步轮(无减速), 同步带带动横向移动。
- * 位置命令 clk 单位 = 每转脉冲 65536 (编码器4倍频)。
+ * 位置模式 FD 命令 clk 单位 = 细分脉冲 (同底盘, 16细分下 3200/圈)。
  * ⚠️ LATERAL_PULLEY_CIRCUMFERENCE_CM 为占位值, 实测同步轮周长后改此处。
  * ⚠️ LATERAL_DIR_INVERT: 若实际方向与指令相反(上升命令却下降), 改 1 翻转。 */
 #define LATERAL_PULLEY_CIRCUMFERENCE_CM  6.0f    /* 同步轮周长 (cm) 占位值, 待实测 */
-#define LATERAL_PULSE_PER_REV            65536.0f
+#define LATERAL_STEPS_PER_REV            200     /* 1.8°电机每转步数 */
+#define LATERAL_MICROSTEP                16      /* 驱动器细分 */
+#define LATERAL_PULSE_PER_REV            ((float)(LATERAL_STEPS_PER_REV * LATERAL_MICROSTEP))  /* 3200 */
 #define LATERAL_DIR_INVERT               0       /* 方向反转标志: 0=正常 1=翻转CW/CCW与编码器符号 */
 
 #endif /* __MECH_PARAMS_H */
