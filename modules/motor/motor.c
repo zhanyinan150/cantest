@@ -106,17 +106,13 @@ void Motor_Init(void)
  *         - 距离->脉冲换算用 mech_params.h 的 MOTOR_X/Y_WHEEL_CIRCUMFERENCE_CM。
  *         - 单位 cm(参考工程为 mm)。
  */
-int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
+void Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
               uint8_t y_dir, uint16_t y_vel, uint8_t y_acc, float y_distance,
               uint8_t z_dir, float z_distance)
 {
-
     bool x_active = (x_distance > 0.0f);
     bool y_active = (y_distance > 0.0f);
     bool z_active = (z_distance > 0.0f);
-
-    printf("[motor] Motor_XYZ start: x=%d y=%d z=%d (1=active)\r\n",
-           (int)x_active, (int)y_active, (int)z_active);
 
     uint16_t vel_x = Motor_ClampVel(x_vel);
     uint8_t  acc_x = Motor_ClampAcc(x_acc);
@@ -138,7 +134,7 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         Log_PrintFloat2("", z_target_cm);  /* MicroLIB 下 printf("%.2f") 会 HardFault, 用 %d 拼接 */
         printf("cm\r\n");
     }
-    osDelay(20);
+    osDelay(500);
         /* ===== 1. 启动 X/Y 步进 (CAN2) =====
          * Y轴双电机(ID 1,2)固定 snF=true 多机同步: 两电机发完全相同的
          *   dir / vel / acc / clk + snF=true 预存, 广播 Synchronous_motion 同时触发,
@@ -167,58 +163,59 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
                (int)y_dir, (int)(!y_dir));
 		}
 
-    /* ===== 3. 轮询等待全轴到位 (osDelay, 不忙等) =====
-     * Y到位 = Y1 && Y2 均到位(双电机都 ARRIVED) */
-    bool x_done = true;  /* X改用 UART5, 发送后 osDelay 等待, 不轮询到位 */
-    bool y1_done = !y_active, y2_done = !y_active;
-    bool z_done = !z_active;
-    uint32_t start = osKernelGetTickCount();
-    uint32_t timeout = (MOTOR_XY_TIMEOUT_MS > MOTOR_Z_TIMEOUT_MS)
-                       ? MOTOR_XY_TIMEOUT_MS : MOTOR_Z_TIMEOUT_MS;
+//     /* ===== 3. 轮询等待全轴到位 (osDelay, 不忙等) =====
+//      * Y到位 = Y1 && Y2 均到位(双电机都 ARRIVED) */
+//     bool x_done = true;  /* X改用 UART5, 发送后 osDelay 等待, 不轮询到位 */
+//     bool y1_done = !y_active, y2_done = !y_active;
+//     bool z_done = !z_active;
+//     uint32_t start = osKernelGetTickCount();
+//     uint32_t timeout = (MOTOR_XY_TIMEOUT_MS > MOTOR_Z_TIMEOUT_MS)
+//                        ? MOTOR_XY_TIMEOUT_MS : MOTOR_Z_TIMEOUT_MS;
 
-    for (;;)
-    {
-        /* Y 到位检测(X轴改用 UART5, 无到位查询, 已 osDelay 等待, x_done 恒 true):
-         * S_FLAG &0x02=到位 &0x04=堵转 &0x08=堵转保护。
-         * Read_Flag 阻塞等待该电机响应(≤100ms), 失败返回-1下轮重试。 */
-        if (y_active && !y1_done)
-        {
-            int32_t f = Emm_V5_CAN_Read_Flag(MOTOR_Y_ADDR_1);
-            if (f >= 0)
-            {
-                if (f & (EMM_FLAG_STALL | EMM_FLAG_STALL_PROT))
-                { LOGERROR("[motor] Y1堵转 flag=0x%X", (unsigned)f); return -1; }
-                if (f & EMM_FLAG_ARRIVED) y1_done = true;
-            }
-        }
-        if (y_active && !y2_done)
-        {
-            int32_t f = Emm_V5_CAN_Read_Flag(MOTOR_Y_ADDR_2);
-            if (f >= 0)
-            {
-                if (f & (EMM_FLAG_STALL | EMM_FLAG_STALL_PROT))
-                { LOGERROR("[motor] Y2堵转 flag=0x%X", (unsigned)f); return -1; }
-                if (f & EMM_FLAG_ARRIVED) y2_done = true;
-            }
-        }
-        /* Z 到位检测: 位移误差 <= 容差 (与 lift.c::Lift_WaitUntilAtTarget 一致) */
-        if (z_active && !z_done)
-        {
-            float err = fabsf(Lift_GetCurrentDisplacement() - z_target_cm);
-            if (err <= MOTOR_Z_TOLERANCE_CM)
-                z_done = true;
-        }
+//     for (;;)
+//     {
+//         /* Y 到位检测(X轴改用 UART5, 无到位查询, 已 osDelay 等待, x_done 恒 true):
+//          * S_FLAG &0x02=到位 &0x04=堵转 &0x08=堵转保护。
+//          * Read_Flag 阻塞等待该电机响应(≤100ms), 失败返回-1下轮重试。 */
+//         if (y_active && !y1_done)
+//         {
+//             int32_t f = Emm_V5_CAN_Read_Flag(MOTOR_Y_ADDR_1);
+//             if (f >= 0)
+//             {
+//                 if (f & (EMM_FLAG_STALL | EMM_FLAG_STALL_PROT))
+//                 { LOGERROR("[motor] Y1堵转 flag=0x%X", (unsigned)f); return -1; }
+//                 if (f & EMM_FLAG_ARRIVED) y1_done = true;
+//             }
+//         }
+//         if (y_active && !y2_done)
+//         {
+//             int32_t f = Emm_V5_CAN_Read_Flag(MOTOR_Y_ADDR_2);
+//             if (f >= 0)
+//             {
+//                 if (f & (EMM_FLAG_STALL | EMM_FLAG_STALL_PROT))
+//                 { LOGERROR("[motor] Y2堵转 flag=0x%X", (unsigned)f); return -1; }
+//                 if (f & EMM_FLAG_ARRIVED) y2_done = true;
+//             }
+//         }
+//         /* Z 到位检测: 位移误差 <= 容差 (与 lift.c::Lift_WaitUntilAtTarget 一致) */
+//         if (z_active && !z_done)
+//         {
+//             float err = fabsf(Lift_GetCurrentDisplacement() - z_target_cm);
+//             if (err <= MOTOR_Z_TOLERANCE_CM)
+//                 z_done = true;
+//         }
 
-        if (x_done && y1_done && y2_done && z_done)
-            return 0;
+//         if (x_done && y1_done && y2_done && z_done)
+//             return 0;
 
-        if ((osKernelGetTickCount() - start) >= timeout)
-        {
-            LOGERROR("[motor] XYZ超时 x=%d y1=%d y2=%d z=%d",
-                    (int)x_done, (int)y1_done, (int)y2_done, (int)z_done);
-            return -1;
-        }
-        osDelay(MOTOR_POLL_PERIOD_MS);
-    }
+//         if ((osKernelGetTickCount() - start) >= timeout)
+//         {
+//             LOGERROR("[motor] XYZ超时 x=%d y1=%d y2=%d z=%d",
+//                     (int)x_done, (int)y1_done, (int)y2_done, (int)z_done);
+//             return -1;
+//         }
+//         osDelay(MOTOR_POLL_PERIOD_MS);
+//     }
+
 }
 

@@ -136,10 +136,23 @@ static void MotorAutoTask(void *argument)
   osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
 
   (void)Motor_XYZ(1,50, 20, 0,    /* X: dir=1(右), 50rpm, acc=20, 10cm */
-                  0, 100, 20, 150.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                  0, 25.0f);             /* Z: dir=0(上), 25cm */
+                  1, 100, 20, 135.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                  0, 35.0f);             /* Z: dir=0(上), 25cm */
 
-  /* 任务挂起不退出: 空循环 osDelay 让出 CPU, 不再调用 Motor_XYZ。 */
+ (void)Motor_XYZ(1,50, 20, 0,    /* X: dir=1(右), 50rpm, acc=20, 10cm */
+                  1, 100, 20, 30.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                  0, 35.0f);             /* Z: dir=0(上), 25cm */
+
+  osDelay(1500);
+  (void)Motor_XYZ(1, 50, 20, 0,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
+                  1, 100, 20, 40.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                  0, 0);             /* Z: dir=0(上), 25cm */
+
+  osDelay(1500);
+  (void)Motor_XYZ(1, 50, 30, 0,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
+                  1, 100, 20, 120.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                  0, 0);             /* Z: dir=0(上), 25cm */
+osDelay(2000);  /* 任务挂起不退出: 空循环 osDelay 让出 CPU, 不再调用 Motor_XYZ。 */
   for (;;) {
     osDelay(1000);
   }
