@@ -55,7 +55,7 @@
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,  /* 原 128*4=512B 跑 App_Init 栈溢出(HardFault 无打印), 提到 2048B; 需同步改 CubeMX defaultTask 栈 */
+  .stack_size = 1024 * 4,  /* 4KB: App_Init + upstream 队列版 fputc(128B tmp) 栈开销; 需同步改 CubeMX defaultTask 栈 */
   .priority = (osPriority_t) osPriorityNormal,
 };
 

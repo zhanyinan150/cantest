@@ -134,7 +134,9 @@ int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
         else
             Lift_Down(z_distance); /* 1=下 */
         z_target_cm = Lift_GetStatus()->target_displacement;
-        printf("[motor] Z start dir=%d target=%.2fcm\r\n", (int)z_dir, z_target_cm);
+        printf("[motor] Z start dir=%d target=", (int)z_dir);
+        Log_PrintFloat2("", z_target_cm);  /* MicroLIB 下 printf("%.2f") 会 HardFault, 用 %d 拼接 */
+        printf("cm\r\n");
     }
     osDelay(20);
         /* ===== 1. 启动 X/Y 步进 (CAN2) =====

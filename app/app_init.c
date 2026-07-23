@@ -33,6 +33,13 @@
 
 #include "stdio.h"
 
+/* ===== 诊断标记 (定位后删除) =====
+ * 同步直发 USART1(不走 LogTask 队列), 定位 App_Init 卡死步骤。
+ * 发前 AbortTransmit 中止 LogTask 的 DMA 防冲突; HAL_UART_Transmit 阻塞但不 osDelay,
+ * 不改变 RTOS 调度时序。配合 main.c 复位标志诊断, 区分"卡死"与"复位"。 */
+#define APP_DIAG(s) do { HAL_UART_AbortTransmit(&huart1); \
+    HAL_UART_Transmit(&huart1, (uint8_t*)(s), sizeof(s)-1, 20); } while(0)
+
 /* Emm_V5.h 与 Emm_V5_CAN.h 各自独立定义了 S_VER 等状态枚举且无相互 include
  * 保护, 不可在同一编译单元同时包含。此处 #if 0 段引用 Emm_V5_CAN_Init,
  * 故只包含 Emm_V5_CAN.h, 不 include Emm_V5.h。 */
@@ -60,6 +67,12 @@ void App_Init(void)
 {
   osDelay(500); /* Wait for USB enumeration */
 
+  /* 日志系统初始化: 建日志队列 + LogTask(DMA 发 USART1)。upstream 队列版 fputc/LOG
+   * 依赖此队列, 不调则 printf/LOG 全被 Log_EnqueueLine 丢弃(无打印)。
+   * 须在任何 printf/LOG 之前(Lift_Init 里就有 printf)。 */
+  BSPLogInit();
+  APP_DIAG("D1 LogInit\r\n");
+
 
   /* ===== 升降系统(Z轴) 启用 =====
    * Lift_Init 注册 M2006 + 创建 LiftTask/DJIMotorTask, CAN1 启动接收反馈。 */
@@ -70,8 +83,17 @@ void App_Init(void)
    * dji_motor 才能收到 M2006 的反馈报文。
    * ↑ 初始化保留, Z 轴 M2006 升降靠它。 */
   Lift_Init();
+  APP_DIAG("D2 LiftInit\r\n");
 
-  HAL_CAN_Start(&hcan1);
+  {
+    HAL_StatusTypeDef r1 = HAL_CAN_Start(&hcan1);
+    char b[64];
+    int n = snprintf(b, sizeof(b), "CAN1 Start=%d state=%lu err=0x%lX txFree=%lu\r\n",
+      (int)r1, (unsigned long)HAL_CAN_GetState(&hcan1),
+      (unsigned long)HAL_CAN_GetError(&hcan1),
+      (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan1));
+    HAL_UART_AbortTransmit(&huart1); HAL_UART_Transmit(&huart1, (uint8_t*)b, (uint16_t)n, 30);
+  }
   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO1_MSG_PENDING);
 
@@ -91,6 +113,7 @@ void App_Init(void)
     }
   }
 #endif
+  APP_DIAG("D3 CAN1+diag\r\n");
 
   /* 步进电机(Emm_V5)初始化: CAN2 扩展帧通信。
    * ===== 测试模式: 用 MotorTest_Init 替代原有步进初始化 =====
@@ -111,7 +134,15 @@ void App_Init(void)
   uint8_t stepper_ids[2] = {1, 2};  /* Y1, Y2 (X=3 走 UART5, 不在此) */
   Emm_V5_CAN_Init(stepper_ids, 2);
 
-  HAL_CAN_Start(&hcan2);
+  {
+    HAL_StatusTypeDef r2 = HAL_CAN_Start(&hcan2);
+    char b[64];
+    int n = snprintf(b, sizeof(b), "CAN2 Start=%d state=%lu err=0x%lX txFree=%lu\r\n",
+      (int)r2, (unsigned long)HAL_CAN_GetState(&hcan2),
+      (unsigned long)HAL_CAN_GetError(&hcan2),
+      (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan2));
+    HAL_UART_AbortTransmit(&huart1); HAL_UART_Transmit(&huart1, (uint8_t*)b, (uint16_t)n, 30);
+  }
   HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO0_MSG_PENDING);
   HAL_CAN_ActivateNotification(&hcan2, CAN_IT_RX_FIFO1_MSG_PENDING);
 
@@ -121,6 +152,17 @@ void App_Init(void)
   Motor_Init();
   /* Chassis_Init(); */  /* 停用: 底盘地址 1,2 与 Y 轴冲突 */
 #endif
+  APP_DIAG("D4 CAN2+MotorInit\r\n");
+  {
+    extern volatile uint8_t idx;
+    char b[80];
+    int n = snprintf(b, sizeof(b), "CAN2 st=%lu err=0x%lX txFree=%lu canIdx=%u\r\n",
+      (unsigned long)HAL_CAN_GetState(&hcan2),
+      (unsigned long)HAL_CAN_GetError(&hcan2),
+      (unsigned long)HAL_CAN_GetTxMailboxesFreeLevel(&hcan2),
+      (unsigned)idx);
+    HAL_UART_AbortTransmit(&huart1); HAL_UART_Transmit(&huart1, (uint8_t*)b, (uint16_t)n, 30);
+  }
 
   /* CAN2-only 测试模式: 升降(Lift_Init)已停用, 不创建 LiftTask/DJIMotorTask */
 
@@ -132,8 +174,15 @@ void App_Init(void)
     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
     .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
   };
-  osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
+  {
+    osThreadId_t h = osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
+    char b[64];
+    int n = snprintf(b, sizeof(b), "AutoTask h=%p freeHeap=%lu\r\n",
+      (void*)h, (unsigned long)xPortGetFreeHeapSize());
+    HAL_UART_AbortTransmit(&huart1); HAL_UART_Transmit(&huart1, (uint8_t*)b, (uint16_t)n, 30);
+  }
 #endif
+  APP_DIAG("D5 AutoTask\r\n");
 
   /* LiftTestTask 已停用: 持续升降会与 motor 模块争抢 Z 轴控制权。
    *   Z 轴现由 MotorAutoTask 控制。需要时取消 #if 1 恢复测试。 */
@@ -152,6 +201,7 @@ void App_Init(void)
    * UART5 接收回调(Emm_V5_UART_RxCpltCallback)已随 Emm_V5.c 重构移除,
    * 当前 UART5 测试只发送不接收, 不再注册 UART5 回调。 */
   UART_Callback_Init();
+  APP_DIAG("D6 UartCb\r\n");
 
   /* CommandTask 已停用(上电自动动作不依赖串口命令)。需要串口手动触发 mxyz 时
    * 取消下方注释恢复 CommandTask。 */
@@ -251,24 +301,25 @@ void App_Init(void)
 **/
 /* ===== 上电自动执行任务 ===== */
 /**
-  * @brief  上电后自动执行预设动作序列 (不依赖串口命令)
-  * @note   动作分两阶段:
-  *           1. Z 轴先动 0.5 秒(Lift_Down 启动 -> osDelay(500) -> Lift_Stop 停住)
-  *           2. 再让 X/Y 动(Motor_XYZ 只动 X/Y, Z 保持停住位置)
-  *         修改各参数即可改动作。动作执行完后任务保活不退出。
+  * @brief  上电后周期执行预设动作 (不依赖串口命令), 每 2 秒一次
+  * @note   启动延时等电机使能 + M2006 反馈稳定后, 循环调用 Motor_XYZ,
+  *         每次执行完 osDelay(2000) 再下一轮。Motor_XYZ 阻塞(轮询到位/超时),
+  *         故实际周期 = 单次执行耗时 + 2s。修改各参数即可改动作。
   */
 static void MotorAutoTask(void *argument)
 {
+  APP_DIAG("DA AutoTask running\r\n");
   printf("[auto] MotorAutoTask start, wait %dms\r\n", MOTOR_AUTO_STARTUP_DELAY);
   osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
 
-  printf("[auto] call Motor_XYZ\r\n");
-  int ret = Motor_XYZ(1,50, 20, 10.0f,    /* X: dir=1(右), 50rpm, acc=20, 30cm */
-                      1, 100, 20, 50.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                      0, 25.0f);             /* Z: dir=1(下), 35cm */
-  printf("[auto] Motor_XYZ ret=%d (0=arrived, -1=timeout/stall)\r\n", ret);
-
-  for (;;) osDelay(1000);  /* 跑完保活, 不退出 */
+  for (;;) {
+    printf("[auto] call Motor_XYZ\r\n");
+    int ret = Motor_XYZ(1,50, 20, 10.0f,    /* X: dir=1(右), 50rpm, acc=20, 10cm */
+                        1, 100, 20, 50.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                        0, 25.0f);             /* Z: dir=0(上), 25cm */
+    printf("[auto] Motor_XYZ ret=%d (0=arrived, -1=timeout/stall)\r\n", ret);
+    osDelay(2000);  /* 每 2 秒执行一次(Motor_XYZ 阻塞, 实际周期 = 执行耗时 + 2s) */
+  }
 }
 
 

@@ -1,4 +1,4 @@
-/* USER CODE BEGIN Header */
+ /* USER CODE BEGIN Header */
 /**
   ******************************************************************************
   * @file    can.c
@@ -149,7 +149,10 @@ void HAL_CAN_MspInit(CAN_HandleTypeDef* canHandle)
     */
     GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;  /* CAN2_RX(PB12)内部上拉: 无收发器/收发器未供电时
+                                          * RX 浮空致 HAL_CAN_Start 等 INAK 清除超时(CAN2 退不出
+                                          * 初始化模式, err=TIMEOUT). 上拉提供 recessive 空闲电平.
+                                          * 注: can.c 为 CubeMX 生成, 重新生成需在 .ioc 改 PB12 Pull=Up */
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
     GPIO_InitStruct.Alternate = GPIO_AF9_CAN2;
     HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
