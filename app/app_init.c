@@ -23,6 +23,8 @@
 #include "lift.h"
 #include "Emm_V5_CAN.h"
 #include "motor.h"       /* Motor_Init / Motor_XYZ / mxyz 命令 (XYZ起重机机构) */
+#include "action.h"      /* Action_Init: action_1 动作序列任务 */
+#include "K230.h"        /* K230_Init: 视觉模块 USART3 通信 */
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"
@@ -88,16 +90,19 @@ void App_Init(void)
   Motor_Init();
 #endif
 
-  /* 创建上电自动执行任务: 不依赖串口命令, 上电后自动跑预设动作序列。
-   * 修改 MotorAutoTask 内的动作即可改行为。 */
-#if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
-  const osThreadAttr_t motorAutoTask_attributes = {
-    .name = "MotorAutoTask",
-    .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
-    .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
-  };
-  osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
-#endif
+  /* 上电自动动作任务:
+   * MotorAutoTask 已停用(下方注释), 改用 action.c 的 action_1 跑完整动作序列
+   * (抓豆子->放箱子)。两者都调 Motor_XYZ, 不可同时运行。
+   * 切回 MotorAutoTask 时: 注释掉下方 Action_Init, 取消下方注释即可。 */
+  Action_Init();
+// #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+//   const osThreadAttr_t motorAutoTask_attributes = {
+//     .name = "MotorAutoTask",
+//     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
+//     .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
+//   };
+//   osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
+// #endif
 
   /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
    * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
@@ -105,6 +110,12 @@ void App_Init(void)
    * UART5 接收回调(Emm_V5_UART_RxCpltCallback)已随 Emm_V5.c 重构移除,
    * 当前 UART5 测试只发送不接收, 不再注册 UART5 回调。 */
   UART_Callback_Init();
+
+  /* K230 视觉模块: 注册 USART2 接收回调 + 启动 DMA 接收。
+   * 须在 UART_Callback_Init 之后(回调分发系统已就绪)。
+   * USART2 (PA2 TX / PA3 RX) 专供 K230, 不与其他模块冲突。
+   * K230 触发的动作组 Action_1..Action_10 在 action.c 中实现(弱定义桩在 K230.c)。 */
+  K230_Init();
 }
 
 /**
@@ -130,30 +141,58 @@ void App_Init(void)
   *         不再调用 Motor_XYZ, 也不让任务函数直接 return(FreeRTOS 任务不可直接 return)。
   *         修改各参数即可改动作。
   */
-static void MotorAutoTask(void *argument)
-{
-  (void)argument;
-  osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
 
-  (void)Motor_XYZ(1,50, 20, 0,    /* X: dir=1(右), 50rpm, acc=20, 10cm */
-                  1, 100, 20, 135.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                  0, 35.0f);             /* Z: dir=0(上), 25cm */
 
- (void)Motor_XYZ(1,50, 20, 0,    /* X: dir=1(右), 50rpm, acc=20, 10cm */
-                  1, 100, 20, 30.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                  0, 35.0f);             /* Z: dir=0(上), 25cm */
+//  static void MotorAutoTask(void *argument)
+// {
+//   (void)argument;
+//   osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
 
-  osDelay(1500);
-  (void)Motor_XYZ(1, 50, 20, 0,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
-                  1, 100, 20, 40.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                  0, 0);             /* Z: dir=0(上), 25cm */
+//    osDelay(1000);
 
-  osDelay(1500);
-  (void)Motor_XYZ(1, 50, 30, 0,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
-                  1, 100, 20, 120.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                  0, 0);             /* Z: dir=0(上), 25cm */
-osDelay(2000);  /* 任务挂起不退出: 空循环 osDelay 让出 CPU, 不再调用 Motor_XYZ。 */
-  for (;;) {
-    osDelay(1000);
-  }
-}
+//   //  // 起始点到抓左边豆子test
+//   //  (void)Motor_XYZ(1, 300, 30,  0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//   //                  1, 100, 20, 0,   /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//   //                  0, 35.0f);         /* Z: dir=0(上), 25cm */
+
+
+//    // 起始点到抓左边豆子
+//    (void)Motor_XYZ(1, 300, 30, 44.0f, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    1, 100, 20, 185,  /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 35.0f);        /* Z: dir=0(上), 25cm */
+//    osDelay(6000);
+
+//    // 抓中间豆子
+//    (void)Motor_XYZ(0, 300, 20, 20.5f,       /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);           /* Z: dir=0(上), 25cm */
+//    osDelay(4000);
+
+//    // 准备去放箱子
+//    (void)Motor_XYZ(0, 300, 20, 60.0f, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    1, 100, 20, 0,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);         /* Z: dir=0(上), 25cm */
+//    osDelay(9000);
+
+//    // 豆子到箱子障碍物动作一
+//    (void)Motor_XYZ(0, 300, 20, 0,       /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    0, 100, 20, 100.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);           /* Z: dir=0(上), 25cm */
+//    osDelay(6000);
+
+//    // 豆子到箱子障碍物动作2
+//    (void)Motor_XYZ(1, 300, 20, 65.0f,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    0, 100, 20, 160.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);           /* Z: dir=0(上), 25cm */
+//    osDelay(6000);
+
+//    //箱子障碍物到箱子
+//    (void)Motor_XYZ(1, 300, 20, 0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    0, 100, 20, 58,     /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);         /* Z: dir=0(上), 25cm */
+//    osDelay(8000);
+//   for (;;)
+//    {
+//      osDelay(1000);
+//    }
+// }
