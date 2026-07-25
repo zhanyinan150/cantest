@@ -455,8 +455,8 @@ if __name__ == "__main__":
     sensor1 = None
     sensor2 = None
     try:
-        # ===== Phase 1: 豆子识别 (K230 上电自主启动, cam1) =====
-        sensor1 = yolo_det.config_camera_and_display(1)
+        # ===== Phase 1: 豆子识别 (K230 上电自主启动, cam2) =====
+        sensor1 = yolo_det.config_camera_and_display(2)
         Display.init(Display.ST7701, width=800, height=480, to_ide=True)
         MediaManager.init()
         time.sleep_ms(200)
@@ -499,8 +499,8 @@ if __name__ == "__main__":
                 break
             time.sleep_ms(10)
 
-        # ===== Phase 2: 正面数字识别 (cam2) =====
-        sensor2 = yolo_det.config_camera_and_display(2)
+        # ===== Phase 2: 正面数字识别 (cam1) =====
+        sensor2 = yolo_det.config_camera_and_display(1)
         time.sleep_ms(200)
         sensor2.run()
         time.sleep_ms(200)
