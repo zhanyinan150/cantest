@@ -24,7 +24,7 @@
 #include "Emm_V5_CAN.h"
 #include "motor.h"       /* Motor_Init / Motor_XYZ / mxyz 命令 (XYZ起重机机构) */
 #include "action.h"      /* Action_Init: action_1 动作序列任务 */
-#include "K230.h"        /* K230_Init: 视觉模块 USART3 通信 */
+#include "K230.h"        /* K230_Init: 视觉模块 USART2 通信 */
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"

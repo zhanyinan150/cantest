@@ -13,8 +13,9 @@
   *     0x01 = 数字位置帧, [2..6]=五个箱子的数字编号(1=黄/2=绿/3=白)
   *
   * 典型数据流:
-  *   k230_write(1)  -> K230 看豆 -> bean_color[3] 填充, bean_flag=1
-  *   k230_write(2)  -> K230 看中间数字 -> number_position[5] 填充
+  *   k230_write(K230_CMD_LOOK_BEAN)   -> K230 看豆 -> bean_color[3] 填充, bean_flag=1
+  *   k230_write(K230_CMD_LOOK_NUMBER) -> K230 看正面数字 (K230端保存, 不回传)
+  *   k230_write(K230_CMD_LOOK_SIDE)   -> K230 看侧面数字 -> number_position[5] 填充
   *   Data_Handle1(颜色) -> 查 number_position 得位置 1~5 -> 调 Action_1..5
   *   Data_Handle1_1(颜色) -> 同上 -> 调 Action_6..10
   ******************************************************************************
@@ -28,11 +29,11 @@
 /* ---- 通信参数 ---- */
 #define K230_RX_BUF_SIZE    8       /* K230 每帧收发 8 字节 */
 
-/* ---- K230 命令码 (k230_write 参数) ---- */
-/* 1=开启看豆, 2=开启看中间数字, 3=看侧面数字, 6=关闭摄像头 */
-#define K230_CMD_LOOK_BEAN      1
-#define K230_CMD_LOOK_NUMBER    2
-#define K230_CMD_LOOK_SIDE      3
+/* ---- K230 命令码 (k230_write 参数, byte[0], 与 K230 端 uart_flag 匹配) ---- */
+/* 2=看豆(cam1), 3=看正面数字(cam2), 1=看侧面数字(cam0), 6=关闭 */
+#define K230_CMD_LOOK_BEAN      2
+#define K230_CMD_LOOK_NUMBER    3
+#define K230_CMD_LOOK_SIDE      1
 #define K230_CMD_CLOSE          6
 
 /* ---- 豆子颜色编码 (K230 返回) ---- */
@@ -44,18 +45,24 @@
 #define K230_LED_PORT      GPIOB
 #define K230_LED_PIN       GPIO_PIN_2
 
-/* ---- K230 接收缓冲 (DMA 直接写入, 8 字节) ---- */
+/* ---- K230 接收缓冲 (DMA 直接写入, 8 字节, byte[7]=XOR校验) ---- */
 extern uint8_t K230_Rx[K230_RX_BUF_SIZE];
 
 /* ---- 解析后的数据 ---- */
 /* 豆子颜色(0x06绿/0x07黄/0x08云), 下标0-2对应第1-3颗 */
 extern __IO uint8_t bean_color[3];
-/* 数字位置编号(1=黄/2=绿/3=云), 下标0-4对应箱子1-5 */
+/* 数字位置编号(1=黄/2=绿/3=云), 下标0-4对应箱子1-5(左到右) */
 extern __IO uint8_t number_position[5];
-/* 豆子数据就绪标志(1=有新数据), Bean_Show 消费后清零 */
+/* 豆子数据就绪标志(1=有新数据), 消费后清零 */
 extern __IO uint8_t bean_flag;
 /* bean_color 锁: 收到一帧后置1, 防止覆盖; 需外部清零才能接收下一帧 */
 extern __IO uint8_t bean_locked;
+/* 正面3个数字(K230 cam2 识别), 下标0-2 */
+extern __IO uint8_t front_number[3];
+/* 正面数字就绪标志(1=有新数据), 消费后清零 */
+extern __IO uint8_t front_number_flag;
+/* 完整5数字就绪标志(1=有新数据), 消费后清零 */
+extern __IO uint8_t full_number_flag;
 /* 数字数据帧计数(每收到一帧非全零 number_position 自增) */
 extern __IO uint8_t count;
 

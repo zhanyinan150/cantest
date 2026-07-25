@@ -56,25 +56,15 @@ static void action_1(void *argument)
     (void)argument;
     osDelay(ACTION_STARTUP_DELAY); /* 等电机使能 + M2006 反馈稳定 */
 
+    /* Phase 1: K230 上电自主识别豆子, 等其发送豆子数据 */
+    while (!bean_flag)
+        osDelay(10);
+    bean_flag = 0;
+    k230_write(K230_CMD_CLOSE);     /* ACK: 收到豆子数据, 关闭豆子识别 */
 
+    action_douzi_first();   /* 抓豆子 */
 
-    /////////////////////////////////////////////////*
-    //我只写了一套动作的xy的动作，然后这个动作里面你的视觉没有作用,我写那两个函数是为了方便让你检查单片机对你数据的收发是否正常
-    /////////////////////////////////////////
-
-
-
-    k230_write(1);//给k230发送看豆命令
-    osDelay(1000);//等待k230返回结果
-    k230_read(&huart2);//解析k230返回结果
-    osDelay(500);//等待k230解析完成
-    k230_write(6);//给k230发送关闭摄像头命令
-
-
-    action_douzi_first();   /* 抓豆子 ，动作截止到抓完豆子已经完成升降结构移到右边*/
-
-    // 数字识别我放在action_xiangzi_first里面了
-    action_xiangzi_first(); /* 放箱子 */
+    action_xiangzi_first(); /* 放箱子(含正面+侧面数字识别) */
 
     for (;;)
     {
@@ -135,11 +125,12 @@ static void action_xiangzi_first(void)
                     0, 0.0f);             /* Z: 不动 */
     osDelay(6000);
 
-    k230_write(2);      // 开启看中间数字
-    osDelay(1000);      // 等待k230返回结果
-    k230_read(&huart2); // 解析k230返回结果
-    osDelay(500);       // 等待k230解析完成
-    k230_write(6);      // 给k230发送关闭摄像头命令
+    /* Phase 2: 到达正面数字位置, 触发 K230 识别正面3个数字 */
+    k230_write(K230_CMD_LOOK_NUMBER);
+    while (!front_number_flag)
+        osDelay(10);
+    front_number_flag = 0;
+    k230_write(K230_CMD_CLOSE);     /* ACK: 收到正面数字, K230 自动转侧面识别 */
 
     /* 箱子障碍物到箱子 */
     (void)Motor_XYZ(1, 300, 20, 0,       /* X: 不动 */
@@ -147,13 +138,9 @@ static void action_xiangzi_first(void)
                     0, 0.0f);             /* Z: 不动 */
     osDelay(8000);
 
-
-    k230_write(3);      // 开启看侧面数字
-    osDelay(1000);      // 等待k230返回结果
-    k230_read(&huart2); // 解析k230返回结果
-    osDelay(500);       // 等待k230解析完成
-    k230_write(6);      // 给k230发送关闭摄像头命令
-
-
-
+    /* Phase 3: 等待 K230 发送完整5个数字(4个识别+1个推理) */
+    while (!full_number_flag)
+        osDelay(10);
+    full_number_flag = 0;
+    k230_write(K230_CMD_CLOSE);     /* 最终 ACK: K230 停止工作 */
 }

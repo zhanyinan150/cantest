@@ -28,9 +28,12 @@ uint8_t K230_Rx[K230_RX_BUF_SIZE];           /* DMA 接收缓冲 */
 static uint8_t Command_Data[K230_RX_BUF_SIZE]; /* 发送缓冲 (k230_write 用) */
 
 __IO uint8_t bean_color[3]      = {0};        /* 解析后的豆子颜色 */
-__IO uint8_t number_position[5] = {0};        /* 解析后的数字位置 */
+__IO uint8_t number_position[5] = {0};        /* 解析后的数字位置(左到右) */
 __IO uint8_t bean_flag   = 0;                 /* 豆子数据就绪标志 */
 __IO uint8_t bean_locked = 0;                 /* bean_color 锁 */
+__IO uint8_t front_number[3]      = {0};      /* 正面3个数字 */
+__IO uint8_t front_number_flag    = 0;        /* 正面数字就绪标志 */
+__IO uint8_t full_number_flag     = 0;        /* 完整5数字就绪标志 */
 __IO uint8_t count       = 0;                 /* 数字数据帧计数 */
 
 /* ==================== 动作组弱定义桩 ==================== */
@@ -59,6 +62,16 @@ void k230_read(UART_HandleTypeDef *huart)
 {
     (void)huart;
 
+    /* XOR 校验: byte[7] 应等于 byte[0]^...^byte[6], 不匹配则丢弃 */
+    uint8_t cs = 0;
+    for (uint8_t i = 0; i < K230_RX_BUF_SIZE - 1; i++)
+        cs ^= K230_Rx[i];
+    if (cs != K230_Rx[K230_RX_BUF_SIZE - 1])
+    {
+        HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
+        return;
+    }
+
     if (K230_Rx[0] == 0x02)
     {
         /* 豆子颜色帧: [2..4] = 三颗豆子颜色 */
@@ -70,15 +83,26 @@ void k230_read(UART_HandleTypeDef *huart)
             bean_flag   = 1;
         }
     }
+    else if (K230_Rx[0] == 0x03)
+    {
+        /* 正面3数字帧: [2..4] = 正面三个数字 */
+        if (K230_Rx[2] != 0 && K230_Rx[3] != 0 && K230_Rx[4] != 0)
+        {
+            for (int i = 0; i < 3; i++)
+                front_number[i] = K230_Rx[i + 2];
+            front_number_flag = 1;
+        }
+    }
     else if (K230_Rx[0] == 0x01)
     {
-        /* 数字位置帧: [2..6] = 五个箱子的数字编号 */
+        /* 完整5数字帧: [2..6] = 五个箱子的数字编号(左到右) */
         if (K230_Rx[2] != 0 && K230_Rx[3] != 0 && K230_Rx[4] != 0 &&
             K230_Rx[5] != 0 && K230_Rx[6] != 0)
         {
             count++;
             for (int i = 0; i < 5; i++)
                 number_position[i] = K230_Rx[i + 2];
+            full_number_flag = 1;
         }
     }
 
@@ -102,14 +126,20 @@ void K230_Init(void)
 /**
   * @brief  向 K230 发送命令
   * @param  command  命令码: K230_CMD_LOOK_BEAN/NUMBER/SIDE/CLOSE
-  *         1=开启看豆, 2=开启看中间数字, 3=看侧面数字, 6=关闭摄像头
+  *         2=看豆, 3=看正面数字, 1=看侧面数字, 6=关闭 (与K230端匹配)
   */
 void k230_write(uint8_t command)
 {
     Command_Data[0] = command;
     Command_Data[1] = (command == K230_CMD_CLOSE) ? 0 : 1;
-    for (uint8_t i = 2; i < K230_RX_BUF_SIZE; i++)
+    for (uint8_t i = 2; i < K230_RX_BUF_SIZE - 1; i++)
         Command_Data[i] = 0;
+
+    /* XOR 校验码: byte[7] = byte[0]^...^byte[6] */
+    uint8_t cs = 0;
+    for (uint8_t i = 0; i < K230_RX_BUF_SIZE - 1; i++)
+        cs ^= Command_Data[i];
+    Command_Data[K230_RX_BUF_SIZE - 1] = cs;
 
     HAL_UART_AbortTransmit(&huart2);  /* 复位 gState, 防止上次 DMA 未完成中断未触发导致卡死 */
     HAL_UART_Transmit_DMA(&huart2, Command_Data, K230_RX_BUF_SIZE);
