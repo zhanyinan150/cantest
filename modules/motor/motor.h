@@ -75,7 +75,7 @@ void Motor_Init(void);
   *         - 距离->脉冲换算用 mech_params.h 的 MOTOR_X/Y_WHEEL_CIRCUMFERENCE_CM。
   *         - 单位 cm(参考工程为 mm)。
   */
-int Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
+void Motor_XYZ(uint8_t x_dir, uint16_t x_vel, uint8_t x_acc, float x_distance,
               uint8_t y_dir, uint16_t y_vel, uint8_t y_acc, float y_distance,
               uint8_t z_dir, float z_distance);
 
