@@ -65,7 +65,7 @@
  * 直径按实物量取填入, 周长由 π×直径 派生, 勿手填。 */
 
 /* ---- X 轴 (单电机) ---- */
-#define MOTOR_X_WHEEL_DIAMETER_CM      1.4f    /* 主动轮直径(cm), 量实物填 (占位5.73->周长≈18) */
+#define MOTOR_X_WHEEL_DIAMETER_CM      1.2f    /* 主动轮直径(cm), 量实物填 (占位5.73->周长≈18) */
 #define MOTOR_X_WHEEL_CIRCUMFERENCE_CM (MECH_PI * MOTOR_X_WHEEL_DIAMETER_CM)  /* 派生: 每转行程 */
 #define MOTOR_X_GEAR_RATIO             1.0f     /* 减速比(电机轴:输出轴), 直驱=1 */
 

@@ -128,11 +128,16 @@ bool EmmV5_CAN_SendCmd(uint8_t *cmd, uint16_t len)
     uint8_t addr = cmd[0];
     CANInstance *target = NULL;    // 查找目标CAN实例
     
-    // 特殊处理广播地址（地址为0）
+    // 特殊处理广播地址(地址为0): 须走 CAN2 扩展帧(步进总线)。
+    // 不能用 can_instance[0] -- 它是 CAN1 上的 M2006(标准帧), 会导致广播以
+    // 标准帧 ID=0 发到 CAN1, Y1/Y2(CAN2 扩展帧)收不到同步触发 -> Y 不动。
+    // 改为找第一个 CAN2 扩展帧实例(Y1)作载体, ExtId 仍按 (0<<8)|0=0 发到 CAN2。
     if (addr == 0) {
-        // 使用第一个可用的CAN实例来发送广播命令
-        if (idx > 0) {
-            target = can_instance[0];
+        for (size_t i = 0; i < idx; ++i) {
+            if (can_instance[i]->use_ext_id && can_instance[i]->can_handle == &hcan2) {
+                target = can_instance[i];
+                break;
+            }
         }
     } else {
         // 普通地址查找

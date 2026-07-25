@@ -22,10 +22,9 @@
 #include "usart.h"
 #include "lift.h"
 #include "Emm_V5_CAN.h"
-#include "chassis.h"
 #include "motor.h"       /* Motor_Init / Motor_XYZ / mxyz 命令 (XYZ起重机机构) */
-//#include "motor_test.h"  /* 测试文件已删除 */
-//extern void UartTest_Init(void);  /* usart_test.c 已删除, 测试停用 */
+#include "action.h"      /* Action_Init: action_1 动作序列任务 */
+#include "K230.h"        /* K230_Init: 视觉模块 USART3 通信 */
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"
@@ -34,24 +33,15 @@
 #include "stdio.h"
 
 /* Emm_V5.h 与 Emm_V5_CAN.h 各自独立定义了 S_VER 等状态枚举且无相互 include
- * 保护, 不可在同一编译单元同时包含。此处 #if 0 段引用 Emm_V5_CAN_Init,
- * 故只包含 Emm_V5_CAN.h, 不 include Emm_V5.h。 */
+ * 保护, 不可在同一编译单元同时包含。此处只包含 Emm_V5_CAN.h, 不 include Emm_V5.h。 */
 
 /* ---- 任务参数 ---- */
 #define MOTOR_AUTO_TASK_STACK_SIZE 1024               /* 堆栈(word), Motor_XYZ + printf 链深 */
 #define MOTOR_AUTO_TASK_PRIORITY   osPriorityNormal   /* 24, 低于 LiftTask(32)/DJIMotorTask(40), 不干扰闭环 */
 #define MOTOR_AUTO_STARTUP_DELAY   2000               /* 上电后等待系统稳定(ms), 等电机使能+M2006反馈 */
 
-#define VOFA_TASK_STACK_SIZE       768                /* 堆栈(word), mxyz命令 sscanf 12参数较耗栈, 原384不够 */
-#define VOFA_TASK_PRIORITY         osPriorityBelowNormal /* 16, 最低, 不干扰控制任务 */
-#define VOFA_TASK_PERIOD           10                 /* 波形发送周期(ms), 100Hz */
-
 /* ---- 内部任务函数 ---- */
 static void MotorAutoTask(void *argument);
-//static void CommandTask(void *argument);
-//static void TelemetryTask(void *argument);
-/* LiftTestTask 已停用(Z 轴由 MotorAutoTask 控制), 声明注释掉 */
-/* static void LiftTestTask(void *argument); */
 
 /**
   * @brief  应用层初始化: 子系统初始化 + 任务创建
@@ -60,6 +50,10 @@ void App_Init(void)
 {
   osDelay(500); /* Wait for USB enumeration */
 
+  /* 日志系统初始化: 建日志队列 + LogTask(DMA 发 USART1)。upstream 队列版 fputc/LOG
+   * 依赖此队列, 不调则 printf/LOG 全被 Log_EnqueueLine 丢弃(无打印)。
+   * 须在任何 printf/LOG 之前(Lift_Init 里就有 printf)。 */
+  BSPLogInit();
 
   /* ===== 升降系统(Z轴) 启用 =====
    * Lift_Init 注册 M2006 + 创建 LiftTask/DJIMotorTask, CAN1 启动接收反馈。 */
@@ -74,36 +68,11 @@ void App_Init(void)
   HAL_CAN_Start(&hcan1);
   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO1_MSG_PENDING);
-
-  /* CAN1 诊断: 打印启动状态、错误计数、电机CAN实例收发统计 */
-  {
-    extern DJIMotorInstance *lift_motor;
-    CAN_HandleTypeDef *h = &hcan1;
-    uint32_t canState = HAL_CAN_GetState(h);
-    uint32_t canErr    = HAL_CAN_GetError(h);
-    uint32_t txFree    = HAL_CAN_GetTxMailboxesFreeLevel(h);
-    printf("[can1] state=%lu err=0x%lX txFree=%lu\r\n",
-           (unsigned long)canState, (unsigned long)canErr, (unsigned long)txFree);
-    if (lift_motor && lift_motor->motor_can_instance) {
-      printf("[can1] motor rx_id=0x%lX rx_counter=%lu\r\n",
-             (unsigned long)lift_motor->motor_can_instance->rx_id,
-             (unsigned long)lift_motor->motor_can_instance->rx_counter);
-    }
-  }
 #endif
 
   /* 步进电机(Emm_V5)初始化: CAN2 扩展帧通信。
-   * ===== 测试模式: 用 MotorTest_Init 替代原有步进初始化 =====
-   * MotorTest_Init 内部完成: Emm_V5_CAN_Init{1,2,3} + HAL_CAN_Start + 使能 +
-   *   创建 MotorTestTask(循环跑 4 个用例) + 打开帧发送日志(USART1 打印每帧)。
-   * 用于逻辑分析仪对照 CAN2 帧内容。恢复正常业务时改回下方注释段即可。
-   *
    * 注意: 不可再保留原 Emm_V5_CAN_Init/HAL_CAN_Start, 否则 CANRegister 重复
    *       注册同 ID 会 while(1) 卡死 (bsp_can.c::CANRegister 重复检测)。 */
-  /* ===== UART5 测试模式: 3号电机(X轴) =====
-   * 走 UART5 (Emm_V5 协议, 115200) 控制 3 号电机, 任务定义见 usart_test.c。
-   * 恢复 CAN2 测试改回 MotorTest_Init() 即可。 */
-  // UartTest_Init();  /* 测试停用, usart_test.c 已删除 */
 #if 1  /* 步进初始化启用: Emm_V5_CAN_Init{1,2} + CAN2 启动 + Motor_Init 使能 X/Y */
   /* Y1/Y2 走 CAN2(扩展帧). X(3) 走 UART5(Emm_V5.c, huart5), 不在 CAN2 注册,
    * 故只向 bsp_can 注册 {1,2} 两个 CAN2 实例。X 的使能/位置命令由
@@ -117,34 +86,23 @@ void App_Init(void)
 
   /* XYZ起重机机构: Y双电机(1,2) CAN2 + X(3) UART5 + Z 由 lift(M2006) 升降。
    * Motor_Init: 使能三只步进(X 经 UART5, Y1/Y2 经 CAN2 同步)。
-   * 底盘(Chassis_Init)与 Y 轴地址 1,2 冲突, 本机构不用底盘, 已停用。 */
+   * 底盘模块(chassis)已移除: 其地址 1,2 与 Y 轴冲突, 本机构不用底盘。 */
   Motor_Init();
-  /* Chassis_Init(); */  /* 停用: 底盘地址 1,2 与 Y 轴冲突 */
 #endif
 
-  /* CAN2-only 测试模式: 升降(Lift_Init)已停用, 不创建 LiftTask/DJIMotorTask */
-
-  /* 创建上电自动执行任务: 不依赖串口命令, 上电后自动跑预设动作序列。
-   * 修改 MotorAutoTask 内的动作即可改行为。 */
-#if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
-  const osThreadAttr_t motorAutoTask_attributes = {
-    .name = "MotorAutoTask",
-    .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
-    .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
-  };
-  osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
-#endif
-
-  /* LiftTestTask 已停用: 持续升降会与 motor 模块争抢 Z 轴控制权。
-   *   Z 轴现由 MotorAutoTask 控制。需要时取消 #if 1 恢复测试。 */
-#if 0
-  const osThreadAttr_t liftTestTask_attributes = {
-    .name = "LiftTestTask",
-    .stack_size = 1024 * 4,
-    .priority = osPriorityNormal,
-  };
-  osThreadNew(LiftTestTask, NULL, &liftTestTask_attributes);
-#endif
+  /* 上电自动动作任务:
+   * MotorAutoTask 已停用(下方注释), 改用 action.c 的 action_1 跑完整动作序列
+   * (抓豆子->放箱子)。两者都调 Motor_XYZ, 不可同时运行。
+   * 切回 MotorAutoTask 时: 注释掉下方 Action_Init, 取消下方注释即可。 */
+  Action_Init();
+// #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+//   const osThreadAttr_t motorAutoTask_attributes = {
+//     .name = "MotorAutoTask",
+//     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
+//     .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
+//   };
+//   osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
+// #endif
 
   /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
    * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
@@ -153,161 +111,88 @@ void App_Init(void)
    * 当前 UART5 测试只发送不接收, 不再注册 UART5 回调。 */
   UART_Callback_Init();
 
-  /* CommandTask 已停用(上电自动动作不依赖串口命令)。需要串口手动触发 mxyz 时
-   * 取消下方注释恢复 CommandTask。 */
-//  const osThreadAttr_t cmdTask_attributes = {
-//    .name = "CmdTask",
-//    .stack_size = VOFA_TASK_STACK_SIZE * 4,
-//    .priority = (osPriority_t)VOFA_TASK_PRIORITY,
-//  };
-//  osThreadNew(CommandTask, NULL, &cmdTask_attributes);
-
-  /* 创建波形监控任务: 调试期临时禁用(与 printf 抢 USART1 致 HardFault)。 */
-#if 0
-  const osThreadAttr_t teleTask_attributes = {
-    .name = "TeleTask",
-    .stack_size = 256 * 4,
-    .priority = (osPriority_t)VOFA_TASK_PRIORITY,
-  };
-  osThreadNew(TelemetryTask, NULL, &teleTask_attributes);
-#endif
+  /* K230 视觉模块: 注册 USART2 接收回调 + 启动 DMA 接收。
+   * 须在 UART_Callback_Init 之后(回调分发系统已就绪)。
+   * USART2 (PA2 TX / PA3 RX) 专供 K230, 不与其他模块冲突。
+   * K230 触发的动作组 Action_1..Action_10 在 action.c 中实现(弱定义桩在 K230.c)。 */
+  K230_Init();
 }
 
-/* ===== VOFA+ 通信概览 =====
- * 上行: JustFloat 二进制波形, 各模块经 Telemetry_Register 注册通道,
- *       TelemetryTask 周期拼接发送(lift: 位移/速度/电流; chassis: 转速)。
- * 下行: 文本命令 "<cmd> <value>\n", 各模块经 CMD_Register 自注册,
- *       CommandTask 查表分发。命令清单见各模块 RegisterCommands。
- */
-
-/* ===== 命令处理 (队列驱动 + 注册表分发) =====
- * 数据流: USART1中断拼行 -> osMessageQueue -> CommandTask 阻塞取出
- *         -> CMD_Dispatch 查 bsp/cmd 注册表 -> 各模块自注册的 handler
- * 各模块在 Init 时 CMD_Register 注册自己的命令, app 层无需知道命令清单。
- */
 /**
-  * @brief  命令消费任务: 阻塞等待命令队列, 取出后查注册表分发
-  *         (上电自动动作不经过此任务, 这里仅供串口手动触发 mxyz 等命令)
-  *         已停用, 需要时取消注释恢复。
-  */
-// static void CommandTask(void *argument)
-// {
-//     (void)argument;
-//     osDelay(2000); /* 等待 M2006 反馈稳定 */
-
-//     osMessageQueueId_t q = UART_Callback_GetCmdQueue();
-//     char line[VOFA_RX_BUF_SIZE];
-
-//     for (;;) {
-//         /* 队列句柄为空(创建失败, 已在 Init 断言)时兜底休眠, 避免忙等锁死 CPU */
-//         if (q == NULL) { osDelay(1000); continue; }
-//         if (osMessageQueueGet(q, line, NULL, osWaitForever) == osOK) {
-//             CMD_Dispatch(line);  /* 查注册表分发, 未知命令返回 -1 静默丢弃 */
-//         }
-//     }
-// }
-
-/**
-  * @brief  波形遥测任务: 周期采集各模块注册的波形通道, 拼成JustFloat帧发送
-  *         各模块经 Telemetry_Register 注册 getter, 本任务统一采集, 不硬编码通道。
-  *         lift 通道: 目标位移/当前位移/电机角速度/电机电流
-  *         chassis 通道: 目标转速/当前转速
-  *         已停用, 需要时取消注释恢复。
-  */
-//static void TelemetryTask(void *argument)
-//{
-//    (void)argument;
-//    osDelay(2000); /* 等待M2006反馈稳定 */
-
-//    TickType_t xLastWakeTime = xTaskGetTickCount();
-//    for (;;) {
-//        Telemetry_SampleAndSend();  /* 采集所有注册通道并发送 */
-//        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(VOFA_TASK_PERIOD));
-//    }
-//}
-
-
-
-
-
-
-
-
-
-/**
- * @brief  XYZ 三轴联动移动 (阻塞, 须在任务上下文调用, 非中断)
- * @param  x_dir       X轴方向, 透传 Emm_V5 (0=CW顺时针, 1=CCW逆时针), 实际左右按电机安装
- * @param  x_vel       X轴转速(RPM), 0~MOTOR_XY_VEL_MAX, 超出自动限幅
- * @param  x_acc       X轴加速度档位 0~255, 0=直接启动
- * @param  x_distance  X轴移动距离(cm), >0 有效, 0=该轴不动
- * @param  y_dir       Y轴方向, 透传 Emm_V5 (0=CW, 1=CCW), 实际前后按电机安装
- *                     (Y轴双电机同向, 若安装镜像需在 motor.c 内对其中一只翻转 dir)
- * @param  y_vel       Y轴转速(RPM), 0~MOTOR_XY_VEL_MAX, 超出自动限幅, 双电机共用
- * @param  y_acc       Y轴加速度档位 0~255, 0=直接启动, 双电机共用
- * @param  y_distance  Y轴移动距离(cm), >0 有效, 0=该轴不动, 双电机发相同脉冲
- * @param  z_dir       Z轴升降方向 (0=上, 1=下)
- * @param  z_distance  Z轴移动距离(cm), >0 有效, 0=不动
- * 方向，速度，加速度，距离，z轴仅为方向和距离
+  * @brief  XYZ 三轴联动移动 (阻塞, 须在任务上下文调用, 非中断)
+  * @param  x_dir       X轴方向, 透传 Emm_V5 (0=CW顺时针, 1=CCW逆时针), 实际左右按电机安装
+  * @param  x_vel       X轴转速(RPM), 0~MOTOR_XY_VEL_MAX, 超出自动限幅
+  * @param  x_acc       X轴加速度档位 0~255, 0=直接启动
+  * @param  x_distance  X轴移动距离(cm), >0 有效, 0=该轴不动
+  * @param  y_dir       Y轴方向, 透传 Emm_V5 (0=CW, 1=CCW), 实际前后按电机安装
+  *                     (Y轴双电机同向, 若安装镜像需在 motor.c 内对其中一只翻转 dir)
+  * @param  y_vel       Y轴转速(RPM), 0~MOTOR_XY_VEL_MAX, 超出自动限幅, 双电机共用
+  * @param  y_acc       Y轴加速度档位 0~255, 0=直接启动, 双电机共用
+  * @param  y_distance  Y轴移动距离(cm), >0 有效, 0=该轴不动, 双电机发相同脉冲
+  * @param  z_dir       Z轴升降方向 (0=上, 1=下)
+  * @param  z_distance  Z轴移动距离(cm), >0 有效, 0=不动
+  * 方向，速度，加速度，距离，z轴仅为方向和距离
 **/
 /* ===== 上电自动执行任务 ===== */
 /**
-  * @brief  上电后自动执行预设动作序列 (不依赖串口命令)
-  * @note   动作分两阶段:
-  *           1. Z 轴先动 0.5 秒(Lift_Down 启动 -> osDelay(500) -> Lift_Stop 停住)
-  *           2. 再让 X/Y 动(Motor_XYZ 只动 X/Y, Z 保持停住位置)
-  *         修改各参数即可改动作。动作执行完后任务保活不退出。
+  * @brief  上电后执行一次预设动作 (不依赖串口命令), 执行完任务挂起不退出
+  * @note   启动延时等电机使能 + M2006 反馈稳定后, 调用一次 Motor_XYZ。
+  *         Motor_XYZ 阻塞(轮询到位/超时), 返回后任务进入空循环 osDelay 挂起,
+  *         不再调用 Motor_XYZ, 也不让任务函数直接 return(FreeRTOS 任务不可直接 return)。
+  *         修改各参数即可改动作。
   */
-static void MotorAutoTask(void *argument)
-{
-  printf("[auto] MotorAutoTask start, wait %dms\r\n", MOTOR_AUTO_STARTUP_DELAY);
-  osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
-
-  printf("[auto] call Motor_XYZ\r\n");
-  int ret = Motor_XYZ(1,50, 20, 10.0f,    /* X: dir=1(右), 50rpm, acc=20, 30cm */
-                      1, 100, 20, 50.0f,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                      0, 25.0f);             /* Z: dir=1(下), 35cm */
-  printf("[auto] Motor_XYZ ret=%d (0=arrived, -1=timeout/stall)\r\n", ret);
-
-  for (;;) osDelay(1000);  /* 跑完保活, 不退出 */
-}
 
 
+//  static void MotorAutoTask(void *argument)
+// {
+//   (void)argument;
+//   osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
+
+//    osDelay(1000);
+
+//   //  // 起始点到抓左边豆子test
+//   //  (void)Motor_XYZ(1, 300, 30,  0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//   //                  1, 100, 20, 0,   /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//   //                  0, 35.0f);         /* Z: dir=0(上), 25cm */
 
 
+//    // 起始点到抓左边豆子
+//    (void)Motor_XYZ(1, 300, 30, 44.0f, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    1, 100, 20, 185,  /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 35.0f);        /* Z: dir=0(上), 25cm */
+//    osDelay(6000);
 
+//    // 抓中间豆子
+//    (void)Motor_XYZ(0, 300, 20, 20.5f,       /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);           /* Z: dir=0(上), 25cm */
+//    osDelay(4000);
 
+//    // 准备去放箱子
+//    (void)Motor_XYZ(0, 300, 20, 60.0f, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    1, 100, 20, 0,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);         /* Z: dir=0(上), 25cm */
+//    osDelay(9000);
 
+//    // 豆子到箱子障碍物动作一
+//    (void)Motor_XYZ(0, 300, 20, 0,       /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    0, 100, 20, 100.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);           /* Z: dir=0(上), 25cm */
+//    osDelay(6000);
 
+//    // 豆子到箱子障碍物动作2
+//    (void)Motor_XYZ(1, 300, 20, 65.0f,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    0, 100, 20, 160.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);           /* Z: dir=0(上), 25cm */
+//    osDelay(6000);
 
-
-
-
-
-
-
-
-
-
-
-
-/* ===== 升降上升/下降测试任务 (已停用) =====
- * Z 轴现由 MotorAutoTask 控制, 此测试任务不再使用。
- * 需要单独测升降时: 取消上方 LiftTestTask 创建的 #if 0, 并恢复本函数体。 */
-#if 0
-static void LiftTestTask(void *argument)
-{
-  (void)argument;
-  osDelay(2000);
-
-  printf("[lift_test] 升降测试任务启动, 单次位移 100cm\r\n");
-  for (;;)
-  {
-    Lift_Up(100.0f);
-    Lift_WaitUntilAtTarget(8000);
-    osDelay(1000);
-    Lift_Down(100.0f);
-    Lift_WaitUntilAtTarget(8000);
-    osDelay(1000);
-  }
-}
-#endif
+//    //箱子障碍物到箱子
+//    (void)Motor_XYZ(1, 300, 20, 0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+//                    0, 100, 20, 58,     /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+//                    0, 0.0f);         /* Z: dir=0(上), 25cm */
+//    osDelay(8000);
+//   for (;;)
+//    {
+//      osDelay(1000);
+//    }
+// }

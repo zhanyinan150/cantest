@@ -29,6 +29,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "bsp_dwt.h"
+#include <stdio.h>   /* snprintf: 复位标志诊断 */
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -112,6 +113,26 @@ int main(void)
    * 收不到 -> 物理上没接到 USART1(可能在看 USB-CDC, 或线序/波特率错)。
    * 定位后删本行。 */
   HAL_UART_Transmit(&huart1, (uint8_t *)"UART1-OK\r\n", 10, 100);
+  /* 复位原因诊断: 读 RCC->CSR 判断本次复位由谁触发。
+   * IWDGRSTF=独立看门狗 WWDGRSTF=窗口看门狗 SFTRSTF=软件复位(NVIC_SystemReset)
+   * PORRSTF=上电 PINRSTF=复位引脚 BORRSTF=掉电 LPWRSTF=低功耗。
+   * IWDG/SFT 置位 = 软件/看门狗反复重启; 仅 POR/PIN/BOR = 硬件/电源。
+   * 清标志后下次复位可重新判断。定位后删本块。 */
+  {
+    uint32_t csr = RCC->CSR;
+    char buf[96];
+    int n = snprintf(buf, sizeof(buf),
+      "\r\nRST CSR=0x%08lX IWDG=%lu WWDG=%lu SFT=%lu POR=%lu PIN=%lu BOR=%lu\r\n",
+      (unsigned long)csr,
+      (unsigned long)(csr & RCC_CSR_IWDGRSTF ? 1:0),
+      (unsigned long)(csr & RCC_CSR_WWDGRSTF ? 1:0),
+      (unsigned long)(csr & RCC_CSR_SFTRSTF ? 1:0),
+      (unsigned long)(csr & RCC_CSR_PORRSTF ? 1:0),
+      (unsigned long)(csr & RCC_CSR_PINRSTF ? 1:0),
+      (unsigned long)(csr & RCC_CSR_BORRSTF ? 1:0));
+    HAL_UART_Transmit(&huart1, (uint8_t *)buf, (uint16_t)n, 100);
+    __HAL_RCC_CLEAR_RESET_FLAGS();
+  }
   /* USER CODE END 2 */
 
   /* Init scheduler */
