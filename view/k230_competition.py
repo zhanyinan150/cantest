@@ -96,6 +96,10 @@ def poll_frames():
          第二帧被静默丢掉。
     现在改为: 累积到 _rx_acc -> 逐帧校验取出 -> 校验失败就滑窗一个字节重试,
     掉字节后能自动重新对齐, 且不会丢帧。
+
+    注意: MicroPython 的 bytearray **不支持** `del ba[:n]` 切片删除
+    (CPython 支持, 直接照搬会抛 "'bytearray' object doesn't support item
+    deletion")。这里用游标 pos 标记已消费长度, 循环结束后整体重建一次。
     """
     global _rx_acc
     n = uart.any()
@@ -105,14 +109,19 @@ def poll_frames():
             _rx_acc.extend(chunk)
 
     frames = []
-    while len(_rx_acc) >= FRAME_LEN:
-        if verify_xor(_rx_acc[:FRAME_LEN]):
-            frames.append(bytes(_rx_acc[:FRAME_LEN]))
-            del _rx_acc[:FRAME_LEN]
+    pos = 0                          # 已消费字节数
+    total = len(_rx_acc)
+    while total - pos >= FRAME_LEN:
+        f = _rx_acc[pos:pos + FRAME_LEN]
+        if verify_xor(f):
+            frames.append(bytes(f))
+            pos += FRAME_LEN
         else:
-            del _rx_acc[:1]          # 滑窗 1 字节, 重新寻找帧边界
+            pos += 1                 # 滑窗 1 字节, 重新寻找帧边界
+    if pos:
+        _rx_acc = bytearray(_rx_acc[pos:])
     if len(_rx_acc) > 64:            # 异常噪声下防止无限增长
-        del _rx_acc[:-16]
+        _rx_acc = bytearray(_rx_acc[-16:])
     return frames
 
 

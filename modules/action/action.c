@@ -65,26 +65,39 @@ static int wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
     return 0;
 }
 
+/**
+  * @brief  发一次命令 + 等一次 ACK, **不重试**
+  * @note   重试策略一律由调用方决定。之前把重试写在这里, 而调用方自己也有
+  *         一层 K230_RETRY_MAX 循环, 两层嵌套后实际重试 3x3=9 次(约 27s
+  *         才放弃), 与宏名和文档说的"最多 3 次"对不上。
+  */
+static int send_cmd_once(uint8_t cmd)
+{
+    k230_ack_flag = 0;                       /* 丢弃上一轮残留 ACK */
+    if (k230_write(cmd) != 0)                /* 发送失败(总线忙) */
+    {
+        dbg("[RTY] uart tx failed\r\n");
+        osDelay(50);
+        return -1;
+    }
+    return wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS);
+}
+
 /* 发命令 + 等 K230 ACK, 超时重试最多 K230_RETRY_MAX 次 */
 static int send_cmd_and_wait_ack(uint8_t cmd)
 {
     for (int retry = 0; retry < K230_RETRY_MAX; retry++)
     {
-        k230_ack_flag = 0;                       /* 丢弃上一轮残留 ACK */
-        if (k230_write(cmd) != 0)                /* 发送失败(总线忙)直接重试 */
-        {
-            dbg("[RTY] uart tx failed\r\n");
-            osDelay(50);
-            continue;
-        }
-        if (wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS) == 0)
+        if (send_cmd_once(cmd) == 0)
             return 0;
         dbg("[RTY] no ack, retry...\r\n");
     }
     return -1;
 }
 
-/* 发命令 + 等 ACK + 等数据, 任一步超时则重发命令, 最多 K230_RETRY_MAX 次 */
+/* 发命令 + 等 ACK + 等数据, 任一步超时则重发命令, 最多 K230_RETRY_MAX 次。
+ * 这里必须调 send_cmd_once 而不是 send_cmd_and_wait_ack —— 后者自带重试, 嵌在
+ * 本函数的循环里就是 9 次。 */
 static int send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
 {
     for (int retry = 0; retry < K230_RETRY_MAX; retry++)
@@ -93,8 +106,11 @@ static int send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
          * 返回成功, 而 bean_color/number_position 里是过期数据。 */
         *data_flag = 0;
 
-        if (send_cmd_and_wait_ack(cmd) != 0)
+        if (send_cmd_once(cmd) != 0)
+        {
+            dbg("[RTY] no ack, retry...\r\n");
             continue;
+        }
         if (wait_flag(data_flag, K230_DATA_TIMEOUT_MS) == 0)
             return 0;
 
@@ -160,7 +176,8 @@ static void action_1(void *argument)
             dbg("[P2] recognition timeout, resync + resend LOOK_NUMBER\r\n");
             k230_write(K230_CMD_CLOSE);
             osDelay(200);
-            send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER);
+            /* 同样只重发一次, 不用 send_cmd_and_wait_ack, 否则又是 3x3 嵌套 */
+            send_cmd_once(K230_CMD_LOOK_NUMBER);
         }
         if (!p2_ok)
         {
