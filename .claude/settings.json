@@ -1,7 +1,19 @@
 {
   "permissions": {
     "allow": [
-      "Bash(gh pr *)"
+      "Bash(gh pr *)",
+      "Bash(git stash *)",
+      "Bash(git merge-tree *)",
+      "Bash(git restore *)",
+      "Bash(/e/UV4/UV4.exe -j0 -b cantest.uvprojx -o build_log.txt)",
+      "Bash(echo \"EXIT_CODE=$?\")",
+      "Bash(grep -oE '\"cantest\\\\\\\\cantest\\\\.axf\" - [0-9]+ Error\\\\\\(s\\\\\\), [0-9]+ Warning\\\\\\(s\\\\\\)' build_log.txt)",
+      "Bash(git commit -m 'feat\\(k230\\): 重构 STM32-K230 通讯协议\\(状态机握手+XOR校验+正面帧\\) *)",
+      "Bash(git commit *)",
+      "Bash(git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push origin feat/xyz-crane)",
+      "Bash(git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 push -u origin test-k230-comm)",
+      "Bash(git commit -m 'docs+feat\\(k230\\): 新增模型与摄像头说明文档 + 通讯测试脚本\\(best1\\) *)",
+      "Bash(git commit -m 'fix\\(k230\\): 修正摄像头分配\\(豆子cam2/正面cam1/侧面cam0, 匹配实际硬件\\) *)"
     ]
   }
 }

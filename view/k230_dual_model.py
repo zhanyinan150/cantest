@@ -1,25 +1,22 @@
 from libs.PipeLine import PipeLine, ScopedTiming
 from libs.AIBase import AIBase
 from libs.AI2D import Ai2d
-import os,sys,gc,time,random,utime,urandom, math
+import os, sys, gc, time
 import ujson
 from media.media import *
 from time import *
 import nncase_runtime as nn
 import ulab.numpy as np
-import image,aidemo,aicube
+import image, aidemo, aicube
 from media.sensor import *
 from media.display import *
-from machine import Pin,FPIOA,UART
-from libs.PipeLine import ScopedTiming
+from machine import Pin, FPIOA, UART
 from libs.Utils import *
 
-# 串口配置：50/51 号脚是 K230 板上 UART3 的引脚，必须用 UART3
-# （改用 UART2 会报 set pin func failed，因为 UART2 绑不到这两个脚）
+# 串口配置：50/51 号脚是 K230 板上 UART3 的引脚
 fpioa = FPIOA()
 fpioa.set_function(50, FPIOA.UART3_TXD)
 fpioa.set_function(51, FPIOA.UART3_RXD)
-fpioa.set_function(53, FPIOA.GPIO53)
 
 display_width = 800
 display_height = 480
@@ -39,42 +36,37 @@ if DISPLAY_MODE == "LCD":
 
 
 class_1_map = {
-    "one": 0x01,
-    "two": 0x02,
-    "three": 0x03,
-    "four": 0x04,
-    "five": 0x05,
-    "greenbean": 0x06,
-    "yellowbean": 0x07,
-    "whitebean": 0x08
+    "1": 0x01,
+    "2": 0x02,
+    "3": 0x03,
+    "4": 0x04,
+    "5": 0x05,
+    "g": 0x06,  # 绿豆
+    "y": 0x07,  # 黄豆
+    "w": 0x08,  # 云豆
 }
 
 
-def two_side_pad_param(input_size, output_size):
-    ratio_w = output_size[0] / input_size[0]
-    ratio_h = output_size[1] / input_size[1]
-    ratio = min(ratio_w, ratio_h)
-    new_w = int(ratio * input_size[0])
-    new_h = int(ratio * input_size[1])
-    dw = (output_size[0] - new_w) / 2
-    dh = (output_size[1] - new_h) / 2
-    top = int(round(dh - 0.1))
-    bottom = int(round(dh + 0.1))
-    left = int(round(dw - 0.1))
-    right = int(round(dw + 0.1))
-    return top, bottom, left, right, ratio
+def frame_checksum(frame):
+    cs = 0
+    for b in frame[:7]:
+        cs ^= b
+    return cs
 
 
-def split_coordinates(value):
-    high_byte = (value >> 8) & 0xFF
-    low_byte = value & 0xFF
-    return high_byte, low_byte
+def make_frame(frame_type, data_bytes):
+    frame = bytearray(8)
+    frame[0] = frame_type
+    for i in range(min(5, len(data_bytes))):
+        frame[2 + i] = data_bytes[i]
+    frame[7] = frame_checksum(frame)
+    return frame
 
 
 class YOLOv11App(AIBase):
-    def __init__(self, kmodel_path, model_input_size, anchors, confidence_threshold=0.8, nms_threshold=0.2, rgb888p_size=[640, 360], display_size=[800, 480], debug_mode=0):
+    def __init__(self, kmodel_path, model_input_size, anchors, confidence_threshold=0.5, nms_threshold=0.45, rgb888p_size=[640, 360], display_size=[800, 480], debug_mode=0):
         super().__init__(kmodel_path, model_input_size, rgb888p_size, debug_mode)
-        self.class_id = ["greenbean", "yellowbean", "whitebean", "one", "two", "three", "four", "five"]
+        self.class_id = ["1", "2", "3", "4", "5", "g", "w", "y"]
         self.kmodel_path = kmodel_path
         self.model_input_size = model_input_size
         self.confidence_threshold = confidence_threshold
@@ -86,14 +78,12 @@ class YOLOv11App(AIBase):
         self.ai2d = Ai2d(debug_mode)
         self.ai2d.set_ai2d_dtype(nn.ai2d_format.NCHW_FMT, nn.ai2d_format.NCHW_FMT, np.uint8, np.uint8)
 
-        # 坐标还原参数，在 get_padding_param() 中计算
         self.pad_top = 0
         self.pad_left = 0
         self.scale_x = 1.0
         self.scale_y = 1.0
 
-        # 防抖状态按场景隔离，避免数字/豆子场景互相干扰
-        self.shake_state = {}  # key -> {'last': None, 'count': 0}
+        self.shake_state = {}
 
         self.side_result = None
         self.full_result = None
@@ -108,7 +98,6 @@ class YOLOv11App(AIBase):
         with ScopedTiming("set preprocess config", self.debug_mode > 0):
             ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size
             top, bottom, left, right = self.get_padding_param()
-            print("padding: {} {} {} {}".format(top, bottom, left, right))
             self.ai2d.pad([top, bottom, left, right], 0, [104, 117, 123])
             self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
             self.ai2d.build([1, 3, ai2d_input_size[1], ai2d_input_size[0]], [1, 3, self.model_input_size[1], self.model_input_size[0]])
@@ -116,8 +105,6 @@ class YOLOv11App(AIBase):
     def postprocess(self, results):
         det_res = []
         with ScopedTiming("postprocess", self.debug_mode > 0):
-            # 8 类模型：输出形状 [1, 1, 12, 2100] (4 xywh + 8 classes)
-            # 2100 = 40*40 + 20*20 + 10*10 (stride 8/16/32, 输入 320x320)
             for i in range(2100):
                 try:
                     result = results[0][0][:, i]
@@ -166,8 +153,6 @@ class YOLOv11App(AIBase):
         return keep
 
     def draw_result(self, dets, img_display):
-        osd_img = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.ARGB8888)
-        osd_img.clear()
         if dets:
             for det in dets:
                 if len(det) < 6:
@@ -177,30 +162,32 @@ class YOLOv11App(AIBase):
                 y = y * self.display_size[1] // self.rgb888p_size[1]
                 w = w * self.display_size[0] // self.rgb888p_size[0]
                 h = h * self.display_size[1] // self.rgb888p_size[1]
-                osd_img.draw_rectangle(x - w // 2, y - h // 2, w, h, color=(255, 0, 255, 0), thickness=2)
-                osd_img.draw_string_advanced(x - w // 2, y - h // 2, 40, "{} {}".format(self.class_id[det[-2]], round(det[-1], 2)), color=(255, 0, 255, 0))
-
+                img_display.draw_rectangle(x - w // 2, y - h // 2, w, h, color=(255, 0, 0), thickness=2)
+                label_x = x - w // 2
+                if label_x < 0:
+                    label_x = 0
+                elif label_x > DISPLAY_WIDTH - 280:
+                    label_x = DISPLAY_WIDTH - 280
+                cid = int(det[-2])
+                label_text = str(int(self.class_id[cid]) % 5 + 1) if cid <= 4 else self.class_id[cid]
+                img_display.draw_string_advanced(label_x, y - h // 2, 40, "{} {}".format(label_text, round(det[-1], 2)), color=(255, 0, 0))
         if self.send_status_text:
-            osd_img.draw_string_advanced(580, 430, 30, self.send_status_text, color=self.send_status_color)
+            img_display.draw_string_advanced(580, 430, 30, self.send_status_text, color=(255, 255, 255))
         Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
-        Display.show_image(osd_img, 0, 0, Display.LAYER_OSD1)
 
     def save_side_result(self, dets):
-        """保存摄像头0(侧面)识别的数字，取置信度最高的1个"""
         if not dets:
             self.side_result = None
             return 0x00
-
         valid_dets = []
         for d in dets:
             if len(d) >= 6:
                 class_idnum = int(d[4])
-                if 3 <= class_idnum <= 7:
+                if 0 <= class_idnum <= 4:
                     valid_dets.append(d)
                 else:
                     cls_name = self.class_id[class_idnum] if class_idnum < len(self.class_id) else "unknown"
                     print(f"已拦截侧面干扰物: {cls_name}")
-
         if not valid_dets:
             self.side_result = None
             return 0x00
@@ -212,7 +199,6 @@ class YOLOv11App(AIBase):
         return self.side_result
 
     def integrate_results(self):
-        """整合正面3个数字 + 侧面1个数字"""
         if self.front_result_a is None or len(self.front_result_a) != 3:
             print("错误：未获取到有效正面3个数字结果")
             return [0x00] * 4
@@ -225,7 +211,6 @@ class YOLOv11App(AIBase):
         return integrated
 
     def infer_fifth_number(self, known_nums):
-        """根据4个不重复的1-5数字，推测缺失的第5个"""
         all_nums = {0x01, 0x02, 0x03, 0x04, 0x05}
         known_set = set(known_nums) - {0x00}
         if len(known_set) == 4:
@@ -238,7 +223,6 @@ class YOLOv11App(AIBase):
             return 0x00
 
     def is_valid_data(self, data_list):
-        """检测数据是否有效，并更新LCD显示状态"""
         if not data_list or all(item == 0x00 for item in data_list):
             self.send_status_text = "无效信息发送"
             self.send_status_color = (255, 255, 0, 0)
@@ -265,13 +249,9 @@ class YOLOv11App(AIBase):
             return True
 
     def draw_number_sort(self, dets, sensor_number, thing_num: int):
-        # 1. 通用过滤：保留置信度>=0.8的目标
-        filtered_dets = [det for det in dets if len(det) >= 6 and det[5] >= 0.80]
-        res_sorted = sorted(filtered_dets, key=lambda x: x[0])
+        res_sorted = sorted(dets, key=lambda x: x[0])
 
-        # 2. 数字识别场景（thing_num=5）
         if thing_num == 5:
-            # 摄像头2（正面）：加防抖+仅在此处清空旧数据
             if sensor_number == 0x03:
                 if self.front_last_result is None:
                     self.front_result_a = None
@@ -279,7 +259,7 @@ class YOLOv11App(AIBase):
                 current_front = []
                 for det in res_sorted[:3]:
                     class_idnum = int(det[4])
-                    if not (3 <= class_idnum <= 7):
+                    if not (0 <= class_idnum <= 4):
                         cls_name = self.class_id[class_idnum] if class_idnum < len(self.class_id) else "unknown"
                         print(f"已拦截正面干扰物: {cls_name}")
                         continue
@@ -304,7 +284,6 @@ class YOLOv11App(AIBase):
                         print(f"正面数字防抖中：第{self.front_stable_count}帧，当前：{hex_strings}")
                 return
 
-            # 摄像头0（侧面）：整合+推测+发送
             elif sensor_number == 0x01:
                 self.save_side_result(res_sorted)
                 integrated = self.integrate_results()
@@ -312,11 +291,7 @@ class YOLOv11App(AIBase):
                 self.full_result = integrated + [fifth_num]
                 self.full_result = self.full_result[:5] + [0x00] * (5 - len(self.full_result))
 
-                MA = bytearray([
-                    sensor_number, 0x00,
-                    self.full_result[0], self.full_result[1], self.full_result[2],
-                    self.full_result[3], self.full_result[4], 0x6B
-                ])
+                MA = make_frame(sensor_number, self.full_result)
                 if self.prevent_shaking(self.full_result, key='side'):
                     if self.is_valid_data(self.full_result):
                         uart.write(MA)
@@ -327,19 +302,17 @@ class YOLOv11App(AIBase):
                     self.full_result = None
                 return self.full_result
 
-        # 3. 豆子识别场景
         elif thing_num == 3:
             send_data = []
             for obj in res_sorted:
                 if len(obj) >= 5:
                     class_idnum = int(obj[4])
-                    if class_idnum < len(self.class_id):
+                    if 5 <= class_idnum <= 7:
                         cls_name = self.class_id[class_idnum]
-                        if cls_name in class_1_map:
-                            send_data.append(class_1_map[cls_name])
+                        send_data.append(class_1_map.get(cls_name, 0x00))
             send_data = send_data[:3] + [0x00] * (3 - len(send_data))
             if 0x00 not in send_data:
-                MA = bytearray([sensor_number, 0x00, send_data[0], send_data[1], send_data[2], 0x00, 0x00, 0x6B])
+                MA = make_frame(sensor_number, send_data)
                 if self.prevent_shaking(send_data, key='bean'):
                     if self.is_valid_data(send_data):
                         uart.write(MA)
@@ -368,28 +341,6 @@ class YOLOv11App(AIBase):
         self.scale_x = self.rgb888p_size[0] / new_w if new_w > 0 else 1.0
         self.scale_y = self.rgb888p_size[1] / new_h if new_h > 0 else 1.0
         return top, bottom, left, right
-
-    def sensor_control(self, sensor):
-        img_display = sensor.snapshot(chn=0)
-        img_ai = sensor.snapshot(chn=2)
-        return img_display, img_ai
-
-    def config_camera_and_display(self, camera_id):
-        supported_ids = [0, 1, 2]
-        if camera_id not in supported_ids:
-            print(f"错误：不支持的摄像头ID {camera_id}，仅支持{supported_ids}")
-            return None
-        print(f"配置摄像头 {camera_id}")
-        sensor = Sensor(id=camera_id)
-        sensor.reset()
-        sensor.set_framesize(width=800, height=480, chn=CAM_CHN_ID_0)
-        sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_0)
-        sensor.set_framesize(width=OUT_RGB888P_WIDTH, height=OUT_RGB888P_HEIGHT, chn=CAM_CHN_ID_2)
-        sensor.set_pixformat(PIXEL_FORMAT_RGB_888_PLANAR, chn=CAM_CHN_ID_2)
-        sensor.set_hmirror(False)
-        sensor.set_vflip(False)
-        print(f"摄像头 {camera_id} 配置完成")
-        return sensor
 
     def preprocess(self, input_np):
         with ScopedTiming("preprocess", self.debug_mode > 0):
@@ -438,12 +389,21 @@ class YOLOv11App(AIBase):
             return []
         return res
 
-    def reset_front_state(self):
-        self.front_result_a = None
-        self.front_last_result = None
-        self.front_stable_count = 0
-        if 'side' in self.shake_state:
-            self.shake_state['side'] = {'last': None, 'count': 0}
+    def config_camera_and_display(self, camera_id):
+        supported_ids = [0, 1, 2]
+        if camera_id not in supported_ids:
+            print(f"错误：不支持的摄像头ID {camera_id}，仅支持{supported_ids}")
+            return None
+        sensor = Sensor(id=camera_id)
+        sensor.reset()
+        sensor.set_framesize(width=800, height=480, chn=CAM_CHN_ID_0)
+        sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_0)
+        sensor.set_framesize(width=OUT_RGB888P_WIDTH, height=OUT_RGB888P_HEIGHT, chn=CAM_CHN_ID_2)
+        sensor.set_pixformat(PIXEL_FORMAT_RGB_888_PLANAR, chn=CAM_CHN_ID_2)
+        sensor.set_hmirror(False)
+        sensor.set_vflip(False)
+        print(f"摄像头 {camera_id} 配置完成")
+        return sensor
 
     def safe_stop_sensor(self, sensor):
         if sensor is not None:
@@ -456,19 +416,26 @@ class YOLOv11App(AIBase):
             except Exception as e:
                 print(f"sensor.reset 失败: {e}")
 
+    def reset_front_state(self):
+        self.front_result_a = None
+        self.front_last_result = None
+        self.front_stable_count = 0
+        if 'side' in self.shake_state:
+            self.shake_state['side'] = {'last': None, 'count': 0}
 
-# ===== 自动轮换识别配置（不依赖 STM32 触发，开机即循环识别） =====
-# 每 SWITCH_INTERVAL_MS 毫秒自动切换一个摄像头，顺序：正面 -> 侧面 -> 豆子 -> 循环
-# 顺序说明：正面必须在侧面前——侧面场景会整合"正面3位 + 侧面1位 + 推算第5位"后发送。
-#   正面数字: (2, 0x03, 5)  保存3位，不独立发送
-#   侧面数字: (0, 0x01, 5)  整合+推算+发送5位
-#   豆子:     (1, 0x02, 3)  识别3个直接发送
-SCENES = [
-    (2, 0x03, 5),
-    (0, 0x01, 5),
-    (1, 0x02, 3),
-]
-SWITCH_INTERVAL_MS = 10000   # 每个摄像头单次识别时长（毫秒）
+
+# ===== 场景配置 =====
+# 命令字节 -> (摄像头ID, 模型路径, sensor_number, thing_num, 场景名)
+# thing_num: 3=豆子场景, 5=数字场景
+# sensor_number: 0x01=侧面数字, 0x02=豆子, 0x03=正面数字
+SCENES = {
+    0x02: (2, "/sdcard/best1.kmodel", 0x02, 3, "豆子"),
+    0x03: (1, "/sdcard/best2.kmodel", 0x03, 5, "正面数字"),
+    0x01: (0, "/sdcard/best2.kmodel", 0x01, 5, "侧面数字"),
+}
+STOP_CMD = b'\x06\x00\x00\x00\x00\x00\x00\x00'
+IDLE_CAMERA = 2
+IDLE_KMODEL = "/sdcard/best1.kmodel"
 
 
 if __name__ == "__main__":
@@ -476,79 +443,127 @@ if __name__ == "__main__":
     rgb888p_size = [640, 360]
     display_size = [800, 480]
 
-    kmodel_path = "/sdcard/best.kmodel"
-    confidence_threshold = 0.8
+    confidence_threshold = 0.5
     nms_threshold = 0.45
     anchors = None
 
-    # 模型自检：确认文件存在再加载
-    try:
-        os.stat(kmodel_path)
-        print(f"模型文件存在: {kmodel_path}")
-    except Exception as e:
-        print(f"错误：模型文件不存在 {kmodel_path}，请先放入SD卡根目录")
-        raise
+    all_kmodels = set([IDLE_KMODEL] + [s[1] for s in SCENES.values()])
+    for kmodel_path in all_kmodels:
+        try:
+            os.stat(kmodel_path)
+            print(f"模型文件存在: {kmodel_path}")
+        except Exception as e:
+            print(f"错误：模型文件不存在 {kmodel_path}")
+            raise
 
-    yolo_det = YOLOv11App(kmodel_path, model_input_size=[320, 320], anchors=anchors,
-                          confidence_threshold=confidence_threshold, nms_threshold=nms_threshold,
-                          rgb888p_size=rgb888p_size, display_size=display_size, debug_mode=0)
-    yolo_det.config_preprocess()
+    Display.init(Display.ST7701, width=800, height=480, to_ide=True)
+    MediaManager.init()
+    time.sleep_ms(200)
 
     sensor = None
-    try:
-        # 初始化顺序：Display.init -> MediaManager.init -> 摄像头按场景切换
-        Display.init(Display.ST7701, width=800, height=480, to_ide=True)
-        MediaManager.init()
+    yolo_det = None
+    current_kmodel = None
+
+    def load_model(kmodel_path):
+        nonlocal yolo_det, current_kmodel
+        if kmodel_path == current_kmodel:
+            return
+        if yolo_det is not None:
+            try:
+                yolo_det.deinit()
+            except Exception as e:
+                print(f"旧模型释放失败: {e}")
+            yolo_det = None
+            gc.collect()
+            time.sleep_ms(50)
+        print(f"加载模型: {kmodel_path}")
+        yolo_det = YOLOv11App(kmodel_path, model_input_size=[320, 320], anchors=anchors,
+                              confidence_threshold=confidence_threshold, nms_threshold=nms_threshold,
+                              rgb888p_size=rgb888p_size, display_size=display_size, debug_mode=0)
+        yolo_det.config_preprocess()
+        current_kmodel = kmodel_path
+
+    def switch_sensor(camera_id):
+        nonlocal sensor
+        if sensor is not None:
+            sensor.stop()
+            sensor.reset()
+            sensor = None
+            gc.collect()
+        time.sleep_ms(50)
+        sensor = yolo_det.config_camera_and_display(camera_id)
+        time.sleep_ms(200)
+        sensor.run()
         time.sleep_ms(200)
 
-        scene_idx = 0
+    try:
+        load_model(IDLE_KMODEL)
+        switch_sensor(IDLE_CAMERA)
+        print("===== 待机中 (摄像头2)，等待 STM32 命令 =====")
+
         while True:
             os.exitpoint()
-            camera_id, sensor_number, thing_num = SCENES[scene_idx]
+            clock.tick()
+            time.sleep_ms(10)
+            data = uart.read()
+            img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
+            Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
+            del img_display
+            gc.collect()
 
-            # 进入正面场景前清掉上一轮的正面结果，重新采集
-            if sensor_number == 0x03:
-                yolo_det.reset_front_state()
+            if data and len(data) == 8:
+                cmd = data[0]
+                if cmd not in SCENES:
+                    continue
 
-            # 切换传感器：先停旧 -> 配新 -> run
-            yolo_det.safe_stop_sensor(sensor)
-            sensor = None
-            time.sleep_ms(50)
-            sensor = yolo_det.config_camera_and_display(camera_id)
-            time.sleep_ms(200)
-            sensor.run()
-            time.sleep_ms(200)
-            print(f"切换到摄像头{camera_id} sensor=0x{sensor_number:02X} thing_num={thing_num} (时长{SWITCH_INTERVAL_MS}ms)")
+                camera_id, kmodel_path, sensor_num, thing_num, scene_name = SCENES[cmd]
+                print(f"\n===== 收到命令 0x{cmd:02X}：{scene_name} =====")
 
-            start_ms = time.ticks_ms()
-            while True:
-                os.exitpoint()
-                clock.tick()
-                time.sleep_ms(10)
-                img_ai = sensor.snapshot(chn=CAM_CHN_ID_2)
-                img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
-                dets = yolo_det.run(img_ai)
-                yolo_det.draw_number_sort(dets, sensor_number, thing_num)
-                yolo_det.draw_result(dets, img_display)
-                del img_display
-                del img_ai
-                gc.collect()
-                if time.ticks_diff(time.ticks_ms(), start_ms) >= SWITCH_INTERVAL_MS:
-                    break
+                if sensor_num == 0x03:
+                    yolo_det.reset_front_state()
 
-            scene_idx = (scene_idx + 1) % len(SCENES)
+                load_model(kmodel_path)
+                switch_sensor(camera_id)
+                print(f"[{scene_name}] 摄像头{camera_id} 已启动，开始识别")
+
+                while True:
+                    os.exitpoint()
+                    clock.tick()
+                    time.sleep_ms(10)
+                    stop_data = uart.read()
+                    if stop_data == STOP_CMD:
+                        print(f"[{scene_name}] 收到停止命令，回待机")
+                        break
+
+                    img_ai = sensor.snapshot(chn=CAM_CHN_ID_2)
+                    img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
+                    dets = yolo_det.run(img_ai)
+                    yolo_det.draw_number_sort(dets, sensor_num, thing_num)
+                    yolo_det.draw_result(dets, img_display)
+                    del img_display
+                    del img_ai
+                    gc.collect()
+
+                load_model(IDLE_KMODEL)
+                switch_sensor(IDLE_CAMERA)
+                print("===== 已回待机 =====")
 
     except KeyboardInterrupt as e:
         print("用户终止：", e)
     except BaseException as e:
         print(f"异常：{e}")
     finally:
-        # 清理传感器，stop() 必须在 MediaManager.deinit() 之前
-        yolo_det.safe_stop_sensor(sensor)
-        try:
-            yolo_det.deinit()
-        except Exception as e:
-            print(f"yolo_det.deinit: {e}")
+        if sensor is not None:
+            try:
+                sensor.stop()
+                sensor.reset()
+            except Exception as e:
+                print(f"sensor 停止失败: {e}")
+        if yolo_det is not None:
+            try:
+                yolo_det.deinit()
+            except Exception as e:
+                print(f"yolo_det.deinit: {e}")
         try:
             Display.deinit()
         except Exception as e:

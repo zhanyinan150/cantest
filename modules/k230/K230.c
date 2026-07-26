@@ -119,6 +119,7 @@ void k230_read(UART_HandleTypeDef *huart)
   */
 void K230_Init(void)
 {
+    __HAL_UART_CLEAR_OREFLAG(&huart2);
     UART_Callback_Register(USART2, k230_read);
     HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
 }
@@ -141,8 +142,7 @@ void k230_write(uint8_t command)
         cs ^= Command_Data[i];
     Command_Data[K230_RX_BUF_SIZE - 1] = cs;
 
-    HAL_UART_AbortTransmit(&huart2);  /* 复位 gState, 防止上次 DMA 未完成中断未触发导致卡死 */
-    HAL_UART_Transmit_DMA(&huart2, Command_Data, K230_RX_BUF_SIZE);
+    HAL_UART_Transmit(&huart2, Command_Data, K230_RX_BUF_SIZE, 100);
 }
 
 
@@ -166,8 +166,8 @@ void k230_write(uint8_t command)
 
 /**
   * @brief  根据豆子颜色查找其在 number_position 中的位置(1~5), 执行 Action_1..5
-  * @param  key  目标豆子颜色: BEAN_GREEN(0x06)/BEAN_YELLOW(0x07)/BEAN_YUN(0x08)
-  * @note   颜色->目标值映射: 绿=2, 黄=1, 云=3 (与 K230 返回的 number_position 编码一致)
+  * @param  key  目标豆子颜色: BEAN_GREEN(0x06)/BEAN_YUN(0x07)/BEAN_YELLOW(0x08)
+  * @note   颜色->目标值映射: 绿=2, 芸=3, 黄=1 (与 K230 返回的 number_position 编码一致)
   */
 void Data_Handle1(uint8_t key)
 {
@@ -177,8 +177,8 @@ void Data_Handle1(uint8_t key)
 
     /* 1、绑定对应目标值 */
     if      (key == BEAN_GREEN)  target = 2;   /* 0x06 绿豆 */
-    else if (key == BEAN_YELLOW) target = 1;   /* 0x07 黄豆 */
-    else if (key == BEAN_YUN)    target = 3;   /* 0x08 云豆 */
+    else if (key == BEAN_YUN)    target = 3;   /* 0x07 芸豆 */
+    else if (key == BEAN_YELLOW) target = 1;   /* 0x08 黄豆 */
     else                 return;
 
     /* 2、遍历 number_position, 查询目标值所在位置(1~5) */

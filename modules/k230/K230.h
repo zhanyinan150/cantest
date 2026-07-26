@@ -9,7 +9,7 @@
   *   发送: k230_write(command) 发 8 字节
   *     [0]=command, [1]=1(关闭时=0), [2..7]=0
   *   接收: K230 发 8 字节, [0]=帧类型:
-  *     0x02 = 豆子颜色帧, [2..4]=三颗豆子颜色(BEAN_GREEN/YELLOW/WHITE)
+  *     0x02 = 豆子颜色帧, [2..4]=三颗豆子颜色(BEAN_GREEN/YUN/YELLOW)
   *     0x01 = 数字位置帧, [2..6]=五个箱子的数字编号(1=黄/2=绿/3=白)
   *
   * 典型数据流:
@@ -37,9 +37,9 @@
 #define K230_CMD_CLOSE          6
 
 /* ---- 豆子颜色编码 (K230 返回) ---- */
-#define BEAN_YELLOW  0x07   /* 黄豆 */
 #define BEAN_GREEN   0x06   /* 绿豆 */
-#define BEAN_YUN     0x08   /* 云豆 */
+#define BEAN_YUN     0x07   /* 芸豆 */
+#define BEAN_YELLOW  0x08   /* 黄豆 */
 
 /* ---- Bean_Show LED 指示灯引脚 (诊断用, 按需修改) ---- */
 #define K230_LED_PORT      GPIOB
@@ -49,7 +49,7 @@
 extern uint8_t K230_Rx[K230_RX_BUF_SIZE];
 
 /* ---- 解析后的数据 ---- */
-/* 豆子颜色(0x06绿/0x07黄/0x08云), 下标0-2对应第1-3颗 */
+/* 豆子颜色(0x06绿/0x07芸/0x08黄), 下标0-2对应第1-3颗 */
 extern __IO uint8_t bean_color[3];
 /* 数字位置编号(1=黄/2=绿/3=云), 下标0-4对应箱子1-5(左到右) */
 extern __IO uint8_t number_position[5];
