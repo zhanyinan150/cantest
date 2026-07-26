@@ -808,3 +808,18 @@ void ZDT_X42_V2_Set_Encoder_Zero(uint8_t addr, int32_t offset)
 #endif
     }
 }
+
+/**
+  * @brief    读取编码器零点偏移
+  * @param    addr  ：电机地址(1-8)
+  * @retval   零点偏移值, 地址非法返回 0
+  * @note     补上读取侧, 消除 encoder_zero_offset "只写不读"的编译告警。
+  *           说明见 Emm_V5_CAN.c 中的同名函数。
+  */
+int32_t ZDT_X42_V2_Get_Encoder_Zero(uint8_t addr)
+{
+    int32_t motor_index = addr - 1;
+    if (motor_index < 0 || motor_index >= 8)
+        return 0;
+    return encoder_zero_offset[motor_index];
+}

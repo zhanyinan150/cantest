@@ -33,6 +33,23 @@
 typedef void (*UART_RxCompleteHandler_t)(UART_HandleTypeDef *huart);
 
 /**
+  * @brief  UART 接收事件回调函数类型 (IDLE 空闲切帧 / 半满 / 收满)
+  * @param  huart  触发回调的 UART 句柄
+  * @param  size   本次实际收到的字节数
+  * @note   配合 HAL_UARTEx_ReceiveToIdle_DMA 使用: 总线空闲即上报, 定长帧
+  *         丢字节后能靠帧间空隙自动重新对齐, 不会像定长 DMA 那样永久错位。
+  */
+typedef void (*UART_RxEventHandler_t)(UART_HandleTypeDef *huart, uint16_t size);
+
+/**
+  * @brief  UART 错误恢复回调函数类型
+  * @param  huart  发生错误的 UART 句柄
+  * @note   ORE/FE/NE/PE 错误后 HAL 会中止接收, 本回调用于重新武装接收。
+  *         不实现则该串口在一次总线噪声后永久失联。
+  */
+typedef void (*UART_RxRestartHandler_t)(UART_HandleTypeDef *huart);
+
+/**
   * @brief  注册某串口实例的接收完成回调
   * @note   由上层模块(Modules/App)在初始化时调用, 实现控制反转,
   *         避免本 BSP 文件反向依赖 modules 层。重复注册同一实例会覆盖旧回调。
@@ -40,6 +57,21 @@ typedef void (*UART_RxCompleteHandler_t)(UART_HandleTypeDef *huart);
   * @param  handler   回调函数指针, NULL 表示注销
   */
 void UART_Callback_Register(USART_TypeDef *instance, UART_RxCompleteHandler_t handler);
+
+/**
+  * @brief  注册某串口实例的接收事件回调 (IDLE 切帧)
+  * @param  instance  UART 外设实例
+  * @param  handler   回调函数指针, NULL 表示注销
+  */
+void UART_Callback_RegisterEvent(USART_TypeDef *instance, UART_RxEventHandler_t handler);
+
+/**
+  * @brief  注册某串口实例的错误恢复回调
+  * @note   USART1 由本模块内建恢复(重启逐字节接收), 无需注册。
+  * @param  instance  UART 外设实例
+  * @param  handler   回调函数指针, NULL 表示注销
+  */
+void UART_Callback_RegisterRestart(USART_TypeDef *instance, UART_RxRestartHandler_t handler);
 
 /**
   * @brief  初始化UART回调分发模块

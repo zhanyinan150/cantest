@@ -14,8 +14,7 @@ from machine import Pin,FPIOA,UART
 from libs.PipeLine import ScopedTiming
 from libs.Utils import *
 
-# 串口配置：50/51 号脚是 K230 板上 UART3 的引脚，必须用 UART3
-# （改用 UART2 会报 set pin func failed，因为 UART2 绑不到这两个脚）
+# 配置串口：50/51 号脚是 K230 板上 UART3 的引脚
 fpioa = FPIOA()
 fpioa.set_function(50, FPIOA.UART3_TXD)
 fpioa.set_function(51, FPIOA.UART3_RXD)
@@ -37,44 +36,53 @@ if DISPLAY_MODE == "LCD":
     DISPLAY_WIDTH = 800
     DISPLAY_HEIGHT = 480
 
-
 class_1_map = {
-    "one": 0x01,
-    "two": 0x02,
-    "three": 0x03,
-    "four": 0x04,
-    "five": 0x05,
-    "greenbean": 0x06,
-    "yellowbean": 0x07,
-    "whitebean": 0x08
+    "1": 0x01,
+    "2": 0x02,
+    "3": 0x03,
+    "4": 0x04,
+    "5": 0x05,
+    "g": 0x06,
+    "w": 0x07,
+    "y": 0x08
 }
 
-
-def two_side_pad_param(input_size, output_size):
-    ratio_w = output_size[0] / input_size[0]
-    ratio_h = output_size[1] / input_size[1]
-    ratio = min(ratio_w, ratio_h)
-    new_w = int(ratio * input_size[0])
-    new_h = int(ratio * input_size[1])
-    dw = (output_size[0] - new_w) / 2
-    dh = (output_size[1] - new_h) / 2
-    top = int(round(dh - 0.1))
-    bottom = int(round(dh + 0.1))
-    left = int(round(dw - 0.1))
-    right = int(round(dw + 0.1))
-    return top, bottom, left, right, ratio
+bean_name_map = {0x06: "g", 0x07: "w", 0x08: "y"}
 
 
-def split_coordinates(value):
-    high_byte = (value >> 8) & 0xFF
-    low_byte = value & 0xFF
-    return high_byte, low_byte
+def frame_checksum(frame):
+    """计算 8 字节帧 XOR 校验码 (byte[0]^...^byte[6])"""
+    cs = 0
+    for b in frame[:7]:
+        cs ^= b
+    return cs
+
+
+def make_frame(frame_type, data_bytes):
+    """构造 8 字节帧: [type, 0x00, data0..data4, checksum]"""
+    frame = bytearray(8)
+    frame[0] = frame_type
+    for i in range(min(5, len(data_bytes))):
+        frame[2 + i] = data_bytes[i]
+    frame[7] = frame_checksum(frame)
+    return frame
+
+
+def check_command(data, cmd_byte):
+    """检查 UART 数据是否为指定命令(8字节, 带 XOR 校验)"""
+    if data and len(data) == 8:
+        cs = 0
+        for b in data[:7]:
+            cs ^= b
+        if cs == data[7] and data[0] == cmd_byte:
+            return True
+    return False
 
 
 class YOLOv11App(AIBase):
     def __init__(self, kmodel_path, model_input_size, anchors, confidence_threshold=0.8, nms_threshold=0.2, rgb888p_size=[640, 360], display_size=[800, 480], debug_mode=0):
         super().__init__(kmodel_path, model_input_size, rgb888p_size, debug_mode)
-        self.class_id = ["greenbean", "yellowbean", "whitebean", "one", "two", "three", "four", "five"]
+        self.class_id = ["1", "2", "3", "4", "5", "g", "w", "y"]
         self.kmodel_path = kmodel_path
         self.model_input_size = model_input_size
         self.confidence_threshold = confidence_threshold
@@ -86,15 +94,8 @@ class YOLOv11App(AIBase):
         self.ai2d = Ai2d(debug_mode)
         self.ai2d.set_ai2d_dtype(nn.ai2d_format.NCHW_FMT, nn.ai2d_format.NCHW_FMT, np.uint8, np.uint8)
 
-        # [FIX] 坐标还原参数，在 get_padding_param() 中计算
-        self.pad_top = 0
-        self.pad_left = 0
-        self.scale_x = 1.0
-        self.scale_y = 1.0
-
-        # [FIX] 防抖状态按场景隔离，避免数字/豆子场景互相干扰
-        self.shake_state = {}  # key -> {'last': None, 'count': 0}
-
+        self.last_result = None
+        self.stable_count = 0
         self.side_result = None
         self.full_result = None
         self.front_result_a = None
@@ -104,75 +105,45 @@ class YOLOv11App(AIBase):
         self.send_status_text = ""
         self.send_status_color = (255, 255, 255, 255)
 
+        self.bean_frame_sent = False
+        self.front_frame_sent = False
+        self.full_frame_sent = False
+
     def config_preprocess(self, input_image_size=None):
         with ScopedTiming("set preprocess config", self.debug_mode > 0):
             ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size
             top, bottom, left, right = self.get_padding_param()
             print("padding: {} {} {} {}".format(top, bottom, left, right))
-            # [FIX] AI2D.pad 标准签名是 4 个值 [top, bottom, left, right]
-            self.ai2d.pad([top, bottom, left, right], 0, [104, 117, 123])
+            self.ai2d.pad([0, 0, 0, 0, top, bottom, left, right], 0, [104, 117, 123])
             self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
             self.ai2d.build([1, 3, ai2d_input_size[1], ai2d_input_size[0]], [1, 3, self.model_input_size[1], self.model_input_size[0]])
 
     def postprocess(self, results):
         det_res = []
         with ScopedTiming("postprocess", self.debug_mode > 0):
-            # [FIX] 8 类模型：输出形状 [1, 1, 12, 2100] (4 xywh + 8 classes)
-            # 2100 = 40*40 + 20*20 + 10*10 (stride 8/16/32, 输入 320x320)
             for i in range(2100):
                 try:
                     result = results[0][0][:, i]
                     max_score = max(result[4:])
                     if max_score > self.confidence_threshold:
-                        # [FIX] 按实际缩放比和 padding 偏移还原坐标
-                        x = (result[0] - self.pad_left) * self.scale_x
-                        y = (result[1] - self.pad_top) * self.scale_y
-                        w = result[2] * self.scale_x
-                        h = result[3] * self.scale_y
+                        x = result[0] * max(self.rgb888p_size) / max(self.model_input_size)
+                        y = result[1] * max(self.rgb888p_size) / max(self.model_input_size)
+                        w = result[2] * max(self.rgb888p_size) / max(self.model_input_size)
+                        h = result[3] * max(self.rgb888p_size) / max(self.model_input_size)
                         det_res.append([x, y, w, h, list(result[4:]).index(max_score), max_score])
                 except Exception as e:
                     print(f"i={i} 出错: {e}")
                     continue
             det_res.sort(key=lambda x: x[-1], reverse=True)
-            # [FIX] 用 IoU NMS 替代"每类只留一个"，支持同类多目标（豆子场景）
-            det_res = self._nms(det_res, self.nms_threshold)
-        return det_res
-
-    # [FIX] 新增：IoU 计算
-    def _iou(self, box1, box2):
-        x1, y1, w1, h1 = box1[0], box1[1], box1[2], box1[3]
-        x2, y2, w2, h2 = box2[0], box2[1], box2[2], box2[3]
-        ax1, ay1 = x1 - w1 / 2, y1 - h1 / 2
-        ax2, ay2 = x1 + w1 / 2, y1 + h1 / 2
-        bx1, by1 = x2 - w2 / 2, y2 - h2 / 2
-        bx2, by2 = x2 + w2 / 2, y2 + h2 / 2
-        ix1 = max(ax1, bx1)
-        iy1 = max(ay1, by1)
-        ix2 = min(ax2, bx2)
-        iy2 = min(ay2, by2)
-        iw = max(0, ix2 - ix1)
-        ih = max(0, iy2 - iy1)
-        inter = iw * ih
-        union = w1 * h1 + w2 * h2 - inter
-        if union <= 0:
-            return 0.0
-        return inter / union
-
-    # [FIX] 新增：基于 IoU 的 NMS
-    def _nms(self, det_res, iou_threshold):
-        if not det_res:
-            return []
-        keep = []
-        remaining = list(det_res)
-        while remaining:
-            best = remaining[0]
-            keep.append(best)
-            remaining = [d for d in remaining[1:] if self._iou(best, d) < iou_threshold]
-        return keep
+            det_res_single = []
+            added_class = []
+            for result in det_res:
+                if not result[-2] in added_class:
+                    added_class.append(result[-2])
+                    det_res_single.append(result)
+        return det_res_single
 
     def draw_result(self, dets, img_display):
-        osd_img = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.ARGB8888)
-        osd_img.clear()
         if dets:
             for det in dets:
                 if len(det) < 6:
@@ -182,26 +153,31 @@ class YOLOv11App(AIBase):
                 y = y * self.display_size[1] // self.rgb888p_size[1]
                 w = w * self.display_size[0] // self.rgb888p_size[0]
                 h = h * self.display_size[1] // self.rgb888p_size[1]
-                osd_img.draw_rectangle(x - w // 2, y - h // 2, w, h, color=(255, 0, 255, 0), thickness=2)
-                osd_img.draw_string_advanced(x - w // 2, y - h // 2, 40, "{} {}".format(self.class_id[det[-2]], round(det[-1], 2)), color=(255, 0, 255, 0))
+                img_display.draw_rectangle(x - w // 2, y - h // 2, w, h, color=(255, 0, 0), thickness=2)
+                label_x = x - w // 2
+                if label_x < 0:
+                    label_x = 0
+                elif label_x > DISPLAY_WIDTH - 280:
+                    label_x = DISPLAY_WIDTH - 280
+                cid = int(det[-2])
+                label_text = self.class_id[cid] if cid < len(self.class_id) else "?"
+                img_display.draw_string_advanced(label_x, y - h // 2, 40, "{} {}".format(label_text, round(det[-1], 2)), color=(255, 0, 0))
 
         if self.send_status_text:
-            osd_img.draw_string_advanced(580, 430, 30, self.send_status_text, color=self.send_status_color)
+            img_display.draw_string_advanced(580, 430, 30, self.send_status_text, color=(255, 255, 255))
         Display.show_image(img_display, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
-        Display.show_image(osd_img, 0, 0, Display.LAYER_OSD1)
 
     def save_side_result(self, dets):
-        """保存摄像头0(侧面)识别的数字，取置信度最高的1个"""
+        """保存摄像头0(侧面)识别的数字, 取置信度最高的1个"""
         if not dets:
             self.side_result = None
             return 0x00
 
-        # 过滤：只保留数字 (class_id 3~7: one~five)，拦截豆子
         valid_dets = []
         for d in dets:
             if len(d) >= 6:
                 class_idnum = int(d[4])
-                if 3 <= class_idnum <= 7:
+                if 0 <= class_idnum <= 4:
                     valid_dets.append(d)
                 else:
                     cls_name = self.class_id[class_idnum] if class_idnum < len(self.class_id) else "unknown"
@@ -210,7 +186,6 @@ class YOLOv11App(AIBase):
         if not valid_dets:
             self.side_result = None
             return 0x00
-        # [FIX] 从 valid_dets 取最高置信度（原来误用 dets，会把豆子选进去）
         best_det = max(valid_dets, key=lambda x: x[5])
         class_idnum = best_det[4]
         cls_name = self.class_id[int(class_idnum)] if int(class_idnum) < len(self.class_id) else ""
@@ -232,7 +207,7 @@ class YOLOv11App(AIBase):
         return integrated
 
     def infer_fifth_number(self, known_nums):
-        """根据4个不重复的1-5数字，推测缺失的第5个"""
+        """根据4个不重复的1-5数字, 推测缺失的第5个"""
         all_nums = {0x01, 0x02, 0x03, 0x04, 0x05}
         known_set = set(known_nums) - {0x00}
         if len(known_set) == 4:
@@ -245,7 +220,6 @@ class YOLOv11App(AIBase):
             return 0x00
 
     def is_valid_data(self, data_list):
-        """检测数据是否有效，并更新LCD显示状态"""
         if not data_list or all(item == 0x00 for item in data_list):
             self.send_status_text = "无效信息发送"
             self.send_status_color = (255, 255, 0, 0)
@@ -254,32 +228,27 @@ class YOLOv11App(AIBase):
         self.send_status_color = (255, 0, 255, 0)
         return True
 
-    # [FIX] 防抖函数：按 key 隔离状态，避免数字/豆子场景互相干扰
-    def prevent_shaking(self, full_result, key='default'):
-        if key not in self.shake_state:
-            self.shake_state[key] = {'last': None, 'count': 0}
-        state = self.shake_state[key]
-        if full_result == state['last']:
-            state['count'] += 1
+    def prevent_shaking(self, full_result):
+        if full_result == self.last_result:
+            self.stable_count += 1
         else:
-            state['count'] = 0
-            state['last'] = full_result
-        print(f"[防抖-{key}] count={state['count']}")
-        if state['count'] < 3:
+            self.stable_count = 0
+            self.last_result = full_result
+        print(f"[防抖] count={self.stable_count}")
+        if self.stable_count < 3:
             return False
         else:
-            state['last'] = None
-            state['count'] = 0
+            self.last_result = None
+            self.stable_count = 0
             return True
 
     def draw_number_sort(self, dets, sensor_number, thing_num: int):
-        # 1. 通用过滤：保留置信度>=0.8的目标
         filtered_dets = [det for det in dets if len(det) >= 6 and det[5] >= 0.80]
         res_sorted = sorted(filtered_dets, key=lambda x: x[0])
 
-        # 2. 数字识别场景（thing_num=5）
+        # 数字识别场景
         if thing_num == 5:
-            # 摄像头2（正面）：加防抖+仅在此处清空旧数据
+            # 摄像头2(正面): 防抖 + 发送正面3数字帧
             if sensor_number == 0x03:
                 if self.front_last_result is None:
                     self.front_result_a = None
@@ -287,8 +256,7 @@ class YOLOv11App(AIBase):
                 current_front = []
                 for det in res_sorted[:3]:
                     class_idnum = int(det[4])
-                    # [FIX] 正面也必须过滤豆子，只接受 one~five (class 3~7)
-                    if not (3 <= class_idnum <= 7):
+                    if not (0 <= class_idnum <= 4):
                         cls_name = self.class_id[class_idnum] if class_idnum < len(self.class_id) else "unknown"
                         print(f"已拦截正面干扰物: {cls_name}")
                         continue
@@ -307,13 +275,19 @@ class YOLOv11App(AIBase):
                         self.front_result_a = current_front
                         hex_strings = ['0x{:02X}'.format(x) for x in self.front_result_a]
                         print(f"正面3个数字已稳定保存：{hex_strings}")
+                        if not self.front_frame_sent:
+                            frame = make_frame(0x03, self.front_result_a)
+                            self.send_status_text = "发送正面: " + " ".join(str(x) for x in self.front_result_a)
+                            uart.write(frame)
+                            print(f"发送正面数字帧: {frame.hex()}")
+                            self.front_frame_sent = True
                         self.front_stable_count = 0
                     else:
                         hex_strings = ['0x{:02X}'.format(x) for x in current_front]
                         print(f"正面数字防抖中：第{self.front_stable_count}帧，当前：{hex_strings}")
                 return
 
-            # 摄像头0（侧面）：整合+推测+发送
+            # 摄像头0(侧面): 整合 + 推测 + 发送5数字帧
             elif sensor_number == 0x01:
                 self.save_side_result(res_sorted)
                 integrated = self.integrate_results()
@@ -321,23 +295,20 @@ class YOLOv11App(AIBase):
                 self.full_result = integrated + [fifth_num]
                 self.full_result = self.full_result[:5] + [0x00] * (5 - len(self.full_result))
 
-                MA = bytearray([
-                    sensor_number, 0x00,
-                    self.full_result[0], self.full_result[1], self.full_result[2],
-                    self.full_result[3], self.full_result[4], 0x6B
-                ])
-                # [FIX] 防抖按 'side' 隔离；发送前校验有效性
-                if self.prevent_shaking(self.full_result, key='side'):
+                if self.prevent_shaking(self.full_result):
                     if self.is_valid_data(self.full_result):
-                        uart.write(MA)
-                        print(f"发送完整5位数字: {MA.hex()}")
+                        frame = make_frame(0x01, self.full_result)
+                        self.send_status_text = "发送数字: " + " ".join(str(x) for x in self.full_result)
+                        uart.write(frame)
+                        print(f"发送完整5位数字帧: {frame.hex()}")
+                        self.full_frame_sent = True
                     else:
                         print("侧面数据无效，跳过发送")
                     self.side_result = None
                     self.full_result = None
                 return self.full_result
 
-        # 3. 豆子识别场景
+        # 豆子识别场景
         elif thing_num == 3:
             send_data = []
             for obj in res_sorted:
@@ -349,12 +320,13 @@ class YOLOv11App(AIBase):
                             send_data.append(class_1_map[cls_name])
             send_data = send_data[:3] + [0x00] * (3 - len(send_data))
             if 0x00 not in send_data:
-                MA = bytearray([sensor_number, 0x00, send_data[0], send_data[1], send_data[2], 0x00, 0x00, 0x6B])
-                # [FIX] 防抖按 'bean' 隔离；发送前校验
-                if self.prevent_shaking(send_data, key='bean'):
+                if self.prevent_shaking(send_data):
                     if self.is_valid_data(send_data):
-                        uart.write(MA)
-                        print(f"发送豆子数据: {MA.hex()}")
+                        frame = make_frame(0x02, send_data)
+                        self.send_status_text = "发送豆子: " + " ".join(bean_name_map.get(x, "?") for x in send_data)
+                        uart.write(frame)
+                        print(f"发送豆子帧: {frame.hex()}")
+                        self.bean_frame_sent = True
                     else:
                         print("豆子数据无效，跳过发送")
                     return send_data
@@ -374,17 +346,7 @@ class YOLOv11App(AIBase):
         bottom = int(round(dh * 2 + 0.1))
         left = int(round(0))
         right = int(round(dw * 2 - 0.1))
-        # [FIX] 保存坐标还原参数
-        self.pad_top = top
-        self.pad_left = left
-        self.scale_x = self.rgb888p_size[0] / new_w if new_w > 0 else 1.0
-        self.scale_y = self.rgb888p_size[1] / new_h if new_h > 0 else 1.0
         return top, bottom, left, right
-
-    def sensor_control(self, sensor):
-        img_display = sensor.snapshot(chn=0)
-        img_ai = sensor.snapshot(chn=2)
-        return img_display, img_ai
 
     def config_camera_and_display(self, camera_id):
         supported_ids = [0, 1, 2]
@@ -394,10 +356,8 @@ class YOLOv11App(AIBase):
         print(f"配置摄像头 {camera_id}")
         sensor = Sensor(id=camera_id)
         sensor.reset()
-        # 显示通道：800x480 RGB565
         sensor.set_framesize(width=800, height=480, chn=CAM_CHN_ID_0)
         sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_0)
-        # AI通道：对齐分辨率 + RGB888 PLANAR
         sensor.set_framesize(width=OUT_RGB888P_WIDTH, height=OUT_RGB888P_HEIGHT, chn=CAM_CHN_ID_2)
         sensor.set_pixformat(PIXEL_FORMAT_RGB_888_PLANAR, chn=CAM_CHN_ID_2)
         sensor.set_hmirror(False)
@@ -456,11 +416,7 @@ class YOLOv11App(AIBase):
         self.front_result_a = None
         self.front_last_result = None
         self.front_stable_count = 0
-        # [FIX] 同时清理侧面防抖状态
-        if 'side' in self.shake_state:
-            self.shake_state['side'] = {'last': None, 'count': 0}
 
-    # [FIX] 新增：安全停止/释放传感器
     def safe_stop_sensor(self, sensor):
         if sensor is not None:
             try:
@@ -475,21 +431,14 @@ class YOLOv11App(AIBase):
 
 if __name__ == "__main__":
     clock = time.clock()
-    display_mode = "lcd"
-    if display_mode == "hdmi":
-        display_size = [1920, 1080]
-    else:
-        display_size = [800, 480]
-    rgb888p_size = [640, 360]
     display_size = [800, 480]
+    rgb888p_size = [640, 360]
 
-    kmodel_path = "/sdcard/best.kmodel"
-    confidence_threshold = 0.8
-    # [FIX] NMS 阈值：0.2 偏激进，豆子靠得近可能被合并，建议 0.4~0.5
-    nms_threshold = 0.45
+    kmodel_path = "/sdcard/best1.kmodel"
+    confidence_threshold = 0.3
+    nms_threshold = 0.2
     anchors = None
 
-    # [FIX] 模型自检：确认文件存在再加载
     try:
         os.stat(kmodel_path)
         print(f"模型文件存在: {kmodel_path}")
@@ -506,114 +455,126 @@ if __name__ == "__main__":
     sensor1 = None
     sensor2 = None
     try:
-        # 初始化顺序符合 skill 规范：Sensor配置 -> Display.init -> MediaManager.init -> sensor.run
-        sensor1 = yolo_det.config_camera_and_display(1)
+        # ===== Phase 1: 豆子识别 (K230 上电自主启动, cam2) =====
+        sensor1 = yolo_det.config_camera_and_display(2)
         Display.init(Display.ST7701, width=800, height=480, to_ide=True)
         MediaManager.init()
         time.sleep_ms(200)
         sensor1.run()
+        time.sleep_ms(200)
 
-        while True:
+        while not yolo_det.bean_frame_sent:
             os.exitpoint()
             clock.tick()
             time.sleep_ms(10)
-            data = uart.read()
-            img1 = sensor1.snapshot(chn=CAM_CHN_ID_0)
             img_ai = sensor1.snapshot(chn=CAM_CHN_ID_2)
-            Display.show_image(img1, x=int((DISPLAY_WIDTH - picture_width) / 2), y=int((DISPLAY_HEIGHT - picture_height) / 2))
-            del img1
+            img_display = sensor1.snapshot(chn=CAM_CHN_ID_0)
+            dets = yolo_det.run(img_ai)
+            yolo_det.draw_number_sort(dets, 0x02, 3)
+            yolo_det.draw_result(dets, img_display)
+            del img_display
             del img_ai
             gc.collect()
 
-            if data and len(data) == 8:
-                uart_flag = data
-                # 摄像头1（豆子）
-                if uart_flag == b'\x02\x01\x00\x00\x00\x00\x00\x00':
-                    yolo_det.safe_stop_sensor(sensor1)
-                    time.sleep_ms(50)
-                    sensor1 = yolo_det.config_camera_and_display(1)
-                    time.sleep_ms(200)
-                    sensor1.run()
-                    time.sleep_ms(200)
-                    while True:
-                        img_ai = sensor1.snapshot(chn=CAM_CHN_ID_2)
-                        img_display = sensor1.snapshot(chn=CAM_CHN_ID_0)
-                        dets = yolo_det.run(img_ai)
-                        yolo_det.draw_number_sort(dets, 0x02, 3)
-                        yolo_det.draw_result(dets, img_display)
-                        del img_display
-                        del img_ai
-                        gc.collect()
-                        list_flag_1 = uart.read()
-                        if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
-                            yolo_det.safe_stop_sensor(sensor1)
-                            gc.collect()
-                            time.sleep_ms(50)
-                            sensor1 = yolo_det.config_camera_and_display(1)
-                            sensor1.run()
-                            break
+        # 等待 STM32 ACK (0x06)
+        while True:
+            os.exitpoint()
+            data = uart.read()
+            if check_command(data, 0x06):
+                print("收到豆子ACK")
+                break
+            time.sleep_ms(10)
 
-                # 摄像头2（正面数字）
-                elif uart_flag == b'\x03\x01\x00\x00\x00\x00\x00\x00':
-                    yolo_det.safe_stop_sensor(sensor1)
-                    time.sleep_ms(50)
-                    yolo_det.reset_front_state()
-                    sensor2 = yolo_det.config_camera_and_display(2)
-                    time.sleep_ms(200)
-                    sensor2.run()
-                    time.sleep_ms(200)
-                    while True:
-                        img_ai = sensor2.snapshot(chn=CAM_CHN_ID_2)
-                        img_display = sensor2.snapshot(chn=CAM_CHN_ID_0)
-                        dets = yolo_det.run(img_ai)
-                        yolo_det.draw_number_sort(dets, 0x03, 5)
-                        yolo_det.draw_result(dets, img_display)
-                        del img_display
-                        del img_ai
-                        gc.collect()
-                        list_flag_1 = uart.read()
-                        if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
-                            yolo_det.safe_stop_sensor(sensor2)
-                            gc.collect()
-                            time.sleep_ms(50)
-                            sensor1 = yolo_det.config_camera_and_display(1)
-                            sensor1.run()
-                            break
+        yolo_det.safe_stop_sensor(sensor1)
+        sensor1 = None
+        gc.collect()
+        time.sleep_ms(50)
 
-                # 摄像头0（侧面数字）
-                elif uart_flag == b'\x01\x01\x00\x00\x00\x00\x00\x00':
-                    yolo_det.safe_stop_sensor(sensor1)
-                    time.sleep_ms(50)
-                    sensor0 = yolo_det.config_camera_and_display(0)
-                    time.sleep_ms(200)
-                    sensor0.run()
-                    time.sleep_ms(200)
-                    while True:
-                        img_ai = sensor0.snapshot(chn=CAM_CHN_ID_2)
-                        img_display = sensor0.snapshot(chn=CAM_CHN_ID_0)
-                        dets = yolo_det.run(img_ai)
-                        yolo_det.draw_number_sort(dets, 0x01, 5)
-                        yolo_det.draw_result(dets, img_display)
-                        del img_display
-                        del img_ai
-                        gc.collect()
-                        list_flag_1 = uart.read()
-                        if list_flag_1 == b'\x06\x00\x00\x00\x00\x00\x00\x00':
-                            # [FIX] 恢复完整 stop+reset，彻底释放
-                            yolo_det.safe_stop_sensor(sensor0)
-                            sensor0 = None
-                            gc.collect()
-                            time.sleep_ms(50)
-                            sensor1 = yolo_det.config_camera_and_display(1)
-                            sensor1.run()
-                            break
+        # 等待 STM32 触发正面数字识别 (0x03)
+        while True:
+            os.exitpoint()
+            data = uart.read()
+            if check_command(data, 0x03):
+                print("收到正面数字触发命令")
+                break
+            time.sleep_ms(10)
+
+        # ===== Phase 2: 正面数字识别 (cam1) =====
+        sensor2 = yolo_det.config_camera_and_display(1)
+        time.sleep_ms(200)
+        sensor2.run()
+        time.sleep_ms(200)
+        yolo_det.reset_front_state()
+
+        while not yolo_det.front_frame_sent:
+            os.exitpoint()
+            clock.tick()
+            time.sleep_ms(10)
+            img_ai = sensor2.snapshot(chn=CAM_CHN_ID_2)
+            img_display = sensor2.snapshot(chn=CAM_CHN_ID_0)
+            dets = yolo_det.run(img_ai)
+            yolo_det.draw_number_sort(dets, 0x03, 5)
+            yolo_det.draw_result(dets, img_display)
+            del img_display
+            del img_ai
+            gc.collect()
+
+        # 等待 STM32 ACK (0x06) - 收到后自动转侧面
+        while True:
+            os.exitpoint()
+            data = uart.read()
+            if check_command(data, 0x06):
+                print("收到正面数字ACK, 转侧面识别")
+                break
+            time.sleep_ms(10)
+
+        yolo_det.safe_stop_sensor(sensor2)
+        sensor2 = None
+        gc.collect()
+        time.sleep_ms(50)
+
+        # ===== Phase 3: 侧面数字识别 (cam0, 自动启动) =====
+        sensor0 = yolo_det.config_camera_and_display(0)
+        time.sleep_ms(200)
+        sensor0.run()
+        time.sleep_ms(200)
+
+        while not yolo_det.full_frame_sent:
+            os.exitpoint()
+            clock.tick()
+            time.sleep_ms(10)
+            img_ai = sensor0.snapshot(chn=CAM_CHN_ID_2)
+            img_display = sensor0.snapshot(chn=CAM_CHN_ID_0)
+            dets = yolo_det.run(img_ai)
+            yolo_det.draw_number_sort(dets, 0x01, 5)
+            yolo_det.draw_result(dets, img_display)
+            del img_display
+            del img_ai
+            gc.collect()
+
+        # 等待 STM32 最终 ACK (0x06)
+        while True:
+            os.exitpoint()
+            data = uart.read()
+            if check_command(data, 0x06):
+                print("收到最终ACK, K230停止")
+                break
+            time.sleep_ms(10)
+
+        yolo_det.safe_stop_sensor(sensor0)
+        sensor0 = None
+
+        # 显示完成
+        osd_img = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.ARGB8888)
+        osd_img.clear()
+        osd_img.draw_string_advanced(300, 220, 50, "完成", color=(255, 0, 255, 0))
+        Display.show_image(osd_img, 0, 0, Display.LAYER_OSD1)
 
     except KeyboardInterrupt as e:
         print("用户终止：", e)
     except BaseException as e:
         print(f"异常：{e}")
     finally:
-        # [FIX] 清理所有传感器，符合 skill: stop() 必须在 MediaManager.deinit() 之前
         yolo_det.safe_stop_sensor(sensor0)
         yolo_det.safe_stop_sensor(sensor1)
         yolo_det.safe_stop_sensor(sensor2)

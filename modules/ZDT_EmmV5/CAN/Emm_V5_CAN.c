@@ -31,6 +31,26 @@ static bool emm_v5_frame_log_enable = false;
 void Emm_V5_CAN_SetFrameLog(bool en) { emm_v5_frame_log_enable = en; }
 
 /**
+ * @brief 按步进电机地址查找 CAN 实例
+ * @note  必须同时匹配"扩展帧"标志, 只比地址会撞车:
+ *        M2006 反馈是标准帧 rx_id=0x201, (0x201>>8)&0xFF == 0x02, 正好等于
+ *        Y2 步进的地址 2。而 Lift_Init 注册在 Emm_V5_CAN_Init 之前, M2006 会
+ *        排在 can_instance[0], 于是 Read_Flag(2)/Read_Encoder(2) 会命中 CAN1
+ *        上的 M2006, 把大疆电机的反馈当成 Y2 的到位/堵转状态来用。
+ */
+static CANInstance *Emm_V5_CAN_FindByAddr(uint8_t addr)
+{
+    for (size_t i = 0; i < idx; ++i)
+    {
+        if (!can_instance[i]->use_ext_id)
+            continue;                       /* 跳过标准帧实例(大疆电机) */
+        if (((can_instance[i]->rx_id >> 8) & 0xFF) == addr)
+            return can_instance[i];
+    }
+    return NULL;
+}
+
+/**
  * @brief 注册X42电机CAN实例
  * @param motor_addr 电机地址(1-8)
  * @param can_handle CAN句柄
@@ -616,18 +636,9 @@ int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr)
         return -1;
     }
     
-    // 查找该电机地址对应的CAN实例
-    CANInstance *target = NULL;
-    for (size_t i = 0; i < idx; ++i)
-    {
-        uint8_t can_addr = (can_instance[i]->rx_id >> 8) & 0xFF;
-        if (can_addr == addr)
-        {
-            target = can_instance[i];
-            break;
-        }
-    }
-    
+    // 查找该电机地址对应的CAN实例(仅扩展帧, 避免与大疆电机标准帧地址撞车)
+    CANInstance *target = Emm_V5_CAN_FindByAddr(addr);
+
     if (target == NULL)
     {
 #if CAN_CMD_LOG_LEVEL >= 1
@@ -635,7 +646,7 @@ int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr)
 #endif
         return -1;
     }
-    
+
     // 清空接收事件标志
     if (target->rx_event) {
         osEventFlagsClear(target->rx_event, 0x01);
@@ -712,16 +723,8 @@ int32_t Emm_V5_CAN_Read_Encoder(uint8_t addr)
   */
 int32_t Emm_V5_CAN_Read_Flag(uint8_t addr)
 {
-    /* 查找该电机地址对应的CAN实例 */
-    CANInstance *target = NULL;
-    for (size_t i = 0; i < idx; ++i)
-    {
-        uint8_t can_addr = (can_instance[i]->rx_id >> 8) & 0xFF;
-        if (can_addr == addr) {
-            target = can_instance[i];
-            break;
-        }
-    }
+    /* 查找该电机地址对应的CAN实例(仅扩展帧, 避免与大疆电机标准帧地址撞车) */
+    CANInstance *target = Emm_V5_CAN_FindByAddr(addr);
     if (target == NULL) {
 #if CAN_CMD_LOG_LEVEL >= 1
         LOGERROR("[CAN] motor addr 0x%02X CAN instance not found", addr);
@@ -838,4 +841,21 @@ void Emm_V5_CAN_Set_Encoder_Zero(uint8_t addr, int32_t offset)
         LOGINFO("[CAN] 已设置电机地址0x%02X的编码器零点偏移为: %d", addr, offset);
 #endif
     }
+}
+
+/**
+  * @brief    读取编码器零点偏移
+  * @param    addr  ：电机地址(1-8)
+  * @retval   零点偏移值, 地址非法返回 0
+  * @note     encoder_zero_offset 原先只写不读(编译器 #550-D 告警), 说明当初
+  *           打算做零点校准却没接上读取侧。这里补上访问接口, 使其可被外部
+  *           读取校验。当前 Read_Encoder 返回的是累计增量(已从 0 起算),
+  *           不减这个偏移, 需要绝对位置时由调用方自行扣除。
+  */
+int32_t Emm_V5_CAN_Get_Encoder_Zero(uint8_t addr)
+{
+    int32_t motor_index = addr - 1;
+    if (motor_index < 0 || motor_index >= 8)
+        return 0;
+    return encoder_zero_offset[motor_index];
 }

@@ -34,44 +34,67 @@ static osMessageQueueId_t s_cmd_queue = NULL;
 typedef struct {
     USART_TypeDef           *instance;   /* 外设实例, NULL=空槽 */
     UART_RxCompleteHandler_t handler;
+    UART_RxEventHandler_t    event;      /* IDLE 切帧回调, 可为 NULL */
+    UART_RxRestartHandler_t  restart;    /* 错误恢复回调, 可为 NULL */
 } UART_DispatchSlot_t;
 
 static UART_DispatchSlot_t s_slots[UART_DISPATCH_SLOTS];
+
+/**
+  * @brief  取得(或新建)某实例的槽位, 槽位耗尽返回 NULL
+  */
+static UART_DispatchSlot_t *s_slot_of(USART_TypeDef *instance)
+{
+    if (instance == NULL)
+        return NULL;
+    for (uint8_t i = 0; i < UART_DISPATCH_SLOTS; i++) {
+        if (s_slots[i].instance == instance)
+            return &s_slots[i];
+    }
+    for (uint8_t i = 0; i < UART_DISPATCH_SLOTS; i++) {
+        if (s_slots[i].instance == NULL) {
+            s_slots[i].instance = instance;
+            return &s_slots[i];
+        }
+    }
+    return NULL;  /* 槽位已满: 静默丢弃, BSP层不应直接 printf */
+}
 
 /**
   * @brief  注册某串口实例的接收完成回调
   */
 void UART_Callback_Register(USART_TypeDef *instance, UART_RxCompleteHandler_t handler)
 {
-    if (instance == NULL)
-        return;
-
-    /* 优先复用已存在的同实例槽位 */
-    for (uint8_t i = 0; i < UART_DISPATCH_SLOTS; i++) {
-        if (s_slots[i].instance == instance) {
-            s_slots[i].handler = handler;
-            return;
-        }
-    }
-    /* 否则占第一个空槽 */
-    for (uint8_t i = 0; i < UART_DISPATCH_SLOTS; i++) {
-        if (s_slots[i].instance == NULL) {
-            s_slots[i].instance = instance;
-            s_slots[i].handler  = handler;
-            return;
-        }
-    }
-    /* 槽位已满: 静默丢弃, BSP层不应直接 printf */
+    UART_DispatchSlot_t *s = s_slot_of(instance);
+    if (s) s->handler = handler;
 }
 
 /**
-  * @brief  按实例查找已注册回调
+  * @brief  注册某串口实例的接收事件回调 (IDLE 切帧)
   */
-static UART_RxCompleteHandler_t s_lookup(USART_TypeDef *instance)
+void UART_Callback_RegisterEvent(USART_TypeDef *instance, UART_RxEventHandler_t handler)
+{
+    UART_DispatchSlot_t *s = s_slot_of(instance);
+    if (s) s->event = handler;
+}
+
+/**
+  * @brief  注册某串口实例的错误恢复回调
+  */
+void UART_Callback_RegisterRestart(USART_TypeDef *instance, UART_RxRestartHandler_t handler)
+{
+    UART_DispatchSlot_t *s = s_slot_of(instance);
+    if (s) s->restart = handler;
+}
+
+/**
+  * @brief  按实例查找已注册槽位(只查不建)
+  */
+static UART_DispatchSlot_t *s_find(USART_TypeDef *instance)
 {
     for (uint8_t i = 0; i < UART_DISPATCH_SLOTS; i++) {
         if (s_slots[i].instance == instance)
-            return s_slots[i].handler;
+            return &s_slots[i];
     }
     return NULL;
 }
@@ -129,7 +152,44 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
     }
 
     /* ---- 其它串口: 转发给业务模块注册的回调 ---- */
-    UART_RxCompleteHandler_t h = s_lookup(huart->Instance);
-    if (h)
-        h(huart);
+    UART_DispatchSlot_t *s = s_find(huart->Instance);
+    if (s && s->handler)
+        s->handler(huart);
+}
+
+/**
+  * @brief  UART 接收事件回调(全局唯一强定义): IDLE 空闲切帧 / DMA 收满
+  * @note   由 HAL_UARTEx_ReceiveToIdle_DMA 触发, 转发给注册的事件回调并带上
+  *         实际字节数, 上层据此判断整帧/残帧。
+  */
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+    UART_DispatchSlot_t *s = s_find(huart->Instance);
+    if (s && s->event)
+        s->event(huart, Size);
+}
+
+/**
+  * @brief  UART 错误回调(全局唯一强定义): 清错误标志 + 重新武装接收
+  * @note   不实现本函数时, 一次 ORE/FE/NE(上电噪声、波特率抖动、对端复位)
+  *         就会让 HAL 中止接收且再不恢复, 该串口永久失联。
+  *         USART1 内建恢复(逐字节 IT); 其它串口调用注册的 restart 回调。
+  */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    /* 清 ORE/NE/FE/PE: F4 的 SR 读后再读 DR 即可清标志 */
+    volatile uint32_t tmp;
+    tmp = huart->Instance->SR;
+    tmp = huart->Instance->DR;
+    (void)tmp;
+    huart->ErrorCode = HAL_UART_ERROR_NONE;
+
+    if (huart->Instance == USART1) {
+        HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
+        return;
+    }
+
+    UART_DispatchSlot_t *s = s_find(huart->Instance);
+    if (s && s->restart)
+        s->restart(huart);
 }

@@ -77,7 +77,9 @@ void DWT_SysTimeUpdate(void)
 
     DWT_CNT_Update();
 
-    CYCCNT64 = (uint64_t)CYCCNT_RountCount * (uint64_t)UINT32_MAX + (uint64_t)cnt_now;
+    /* 一次溢出跨越的是 2^32 个计数, 不是 UINT32_MAX(=2^32-1)。
+     * 用 UINT32_MAX 每溢出一次就少算 1 个 cycle, 长时间运行后时间轴持续偏慢。*/
+    CYCCNT64 = (uint64_t)CYCCNT_RountCount * ((uint64_t)UINT32_MAX + 1ULL) + (uint64_t)cnt_now;
     CNT_TEMP1 = CYCCNT64 / CPU_FREQ_Hz;
     CNT_TEMP2 = CYCCNT64 - CNT_TEMP1 * CPU_FREQ_Hz;
     SysTime.s = CNT_TEMP1;
@@ -114,22 +116,34 @@ uint64_t DWT_GetTimeline_us(void)
 }
 
 
-void DWT_Delay(float Delay)
+/* CYCCNT 是 32 位计数器, 168MHz 下约 25.6s 溢出一圈。
+ * 若请求的延时折算成 cycle 数 >= 2^32, 比较条件恒为真 -> 死循环卡死整机。
+ * 这里把上限夹到略小于一圈。注意本函数是忙等, 会独占 CPU:
+ * 任务上下文请优先用 osDelay(), 仅在调度器未启动或需要 us 级精度时用本函数。*/
+#define DWT_DELAY_MAX_CYCLES   (0xF0000000UL)   /* ≈ 23.9s @168MHz */
+
+static void DWT_DelayCycles(float cycles)
 {
     uint32_t tickstart = DWT->CYCCNT;
-    float wait = Delay;
+    uint32_t wait;
 
-    while ((DWT->CYCCNT - tickstart) < wait * (float)CPU_FREQ_Hz)
+    if (cycles <= 0.0f)
+        return;
+    wait = (cycles >= (float)DWT_DELAY_MAX_CYCLES)
+         ? DWT_DELAY_MAX_CYCLES
+         : (uint32_t)cycles;
+
+    while ((DWT->CYCCNT - tickstart) < wait)
     {
     }
 }
 
+void DWT_Delay(float Delay)
+{
+    DWT_DelayCycles(Delay * (float)CPU_FREQ_Hz);
+}
+
 void DWT_Delay_ms(float Delay)
 {
-    uint32_t tickstart = DWT->CYCCNT;
-    float wait = Delay*0.001;
-
-    while ((DWT->CYCCNT - tickstart) < wait * (float)CPU_FREQ_Hz)
-    {
-    }
+    DWT_DelayCycles(Delay * 0.001f * (float)CPU_FREQ_Hz);
 }

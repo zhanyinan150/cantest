@@ -107,7 +107,16 @@ static void LogTask(void *argument)
 
         /* DMA 发送 USART1, 等完成信号量(100ms 超时兜底防 DMA 卡死) */
         if (HAL_UART_Transmit_DMA(&huart1, (uint8_t *)tx_buf, len) == HAL_OK) {
-            xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(100));
+            if (xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(100)) != pdTRUE) {
+                /* 超时: DMA 可能仍在读 tx_buf。若直接进下一轮, 循环顶部的
+                 * osMessageQueueGet 会就地覆盖 tx_buf, 正在发送的内容变乱码。
+                 * 必须先中止传输确保 DMA 松开缓冲, 再复用。
+                 * 用 AbortTransmit 而非 Abort: 后者会清掉 RXNEIE, 连带打断
+                 * USART1 上 VOFA 命令的逐字节接收(见 bsp_vofa.c 同款注释)。 */
+                HAL_UART_AbortTransmit(&huart1);
+                /* 清掉可能在 Abort 之后才到达的迟到信号, 避免下一行误判已完成 */
+                (void)xSemaphoreTake(s_tx_done, 0);
+            }
         } else {
             osDelay(2);  /* DMA 启动失败(总线忙/错误), 短等重试下一行 */
         }

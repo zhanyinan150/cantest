@@ -88,25 +88,20 @@ CANInstance *CANRegister(CAN_Init_Config_s *config)
     {
         CANServiceInit();
     }
+    /* 注册失败一律返回 NULL 由调用方处置。
+     * 原实现是 LOGERROR + while(1){}: 既卡死开机, 又因为日志走队列而根本发不
+     * 出去(LogTask 得不到调度), 现场表现为"上电无任何输出", 反而更难定位。 */
     if (idx >= CAN_MX_REGISTER_CNT)
     {
-#ifdef CAN_DEBUG
-        LOGERROR("[bsp_can] CAN instance exceeded MAX num");
-        while (1) {}
-#else
+        LOGERROR("[bsp_can] CAN instance exceeded MAX num (%d)", CAN_MX_REGISTER_CNT);
         return NULL;
-#endif
     }
     for (size_t i = 0; i < idx; i++)
     {
         if (can_instance[i]->rx_id == config->rx_id && can_instance[i]->can_handle == config->can_handle)
         {
-#ifdef CAN_DEBUG
             LOGERROR("[bsp_can] CAN id crash, tx [%d] or rx [%d] already registered", config->tx_id, config->rx_id);
-            while (1) {}
-#else
             return NULL;
-#endif
         }
     }
 
@@ -179,14 +174,12 @@ uint8_t CANTransmit(CANInstance *_instance, float timeout)
 
 void CANSetDLC(CANInstance *_instance, uint8_t length)
 {
+    if (_instance == NULL)
+        return;
     if (length > 8 || length == 0)
     {
-#ifdef CAN_DEBUG
-        LOGERROR("[bsp_can] CAN DLC error!");
-        while (1) {}
-#else
-        return;
-#endif
+        LOGERROR("[bsp_can] CAN DLC error: %d (valid 1-8)", length);
+        return;   /* 保持原 DLC 不变, 不再 while(1) 卡死整机 */
     }
     _instance->txconf.DLC = length;
 }

@@ -10,16 +10,16 @@
   *     以同名强定义覆写即可, 无需改 K230.c
   *
   * 依赖前提(须在 App_Init 中先完成):
-  *   1. MX_USART2_UART_Init() 已由 CubeMX 生成调用 (main.c)
+  *   1. MX_USART3_UART_Init() 已由 CubeMX 生成调用 (main.c)
   *   2. UART_Callback_Init() 已调用 (注册 USART1 + 创建命令队列)
-  *   3. K230_Init() 注册 USART2 回调并启动 DMA 接收
+  *   3. K230_Init() 注册 USART3 回调并启动 DMA 接收
   *
   * 通信协议详见 K230.h 文件头注释。
   ******************************************************************************
   */
 
 #include "K230.h"
-#include "usart.h"           /* huart2 */
+#include "usart.h"           /* huart3 */
 #include "uart_callback.h"   /* UART_Callback_Register */
 
 /* ==================== 模块变量 ==================== */
@@ -28,10 +28,14 @@ uint8_t K230_Rx[K230_RX_BUF_SIZE];           /* DMA 接收缓冲 */
 static uint8_t Command_Data[K230_RX_BUF_SIZE]; /* 发送缓冲 (k230_write 用) */
 
 __IO uint8_t bean_color[3]      = {0};        /* 解析后的豆子颜色 */
-__IO uint8_t number_position[5] = {0};        /* 解析后的数字位置 */
+__IO uint8_t number_position[5] = {0};        /* 解析后的数字位置(左到右) */
 __IO uint8_t bean_flag   = 0;                 /* 豆子数据就绪标志 */
 __IO uint8_t bean_locked = 0;                 /* bean_color 锁 */
+__IO uint8_t front_number[3]      = {0};      /* 正面3个数字 */
+__IO uint8_t front_number_flag    = 0;        /* 正面数字就绪标志 */
+__IO uint8_t full_number_flag     = 0;        /* 完整5数字就绪标志 */
 __IO uint8_t count       = 0;                 /* 数字数据帧计数 */
+__IO uint8_t k230_ack_flag = 0;               /* K230 ACK (0x0A) 就绪标志 */
 
 /* ==================== 动作组弱定义桩 ==================== */
 /* 用户在 action.c 中以同名强定义覆写, 链接器自动替换弱定义。
@@ -49,15 +53,59 @@ __weak void Action_10(void) {}
 
 /* ==================== 内部函数 ==================== */
 
+/* 接收统计(诊断用): 可在调试器里看是否有帧在丢 */
+__IO uint32_t k230_rx_frames  = 0;   /* 成功解析的整帧数 */
+__IO uint32_t k230_rx_badxor  = 0;   /* XOR 校验失败帧数 */
+__IO uint32_t k230_rx_badlen  = 0;   /* 长度不等于 8 的残帧数 */
+__IO uint32_t k230_rx_rearm_err = 0; /* 重新武装 DMA 失败次数 */
+
 /**
-  * @brief  USART2 DMA 接收完成回调 (中断上下文)
-  *         解析 K230 发来的 8 字节数据帧, 重新启动 DMA 接收下一帧
-  * @note   通过 UART_Callback_Register 注册, 由 bsp/uart/uart_callback.c
-  *         的 HAL_UART_RxCpltCallback 分发调用, 不直接覆写弱函数
+  * @brief  武装 USART3 的 IDLE 空闲切帧 DMA 接收
+  * @note   用 ReceiveToIdle 而非定长 Receive_DMA: 定长模式下一旦丢/多一个字节,
+  *         DMA 组帧相位就永久错位, XOR 永远失败且无法自愈; IDLE 模式靠帧间
+  *         空隙(K230 每帧之间必有间隔)重新对齐, 掉字节后下一帧即恢复。
+  *         返回值必须检查——失败而不重试会导致 K230 通讯永久中断。
   */
-void k230_read(UART_HandleTypeDef *huart)
+static void k230_arm_rx(UART_HandleTypeDef *huart)
 {
-    (void)huart;
+    if (HAL_UARTEx_ReceiveToIdle_DMA(huart, K230_Rx, K230_RX_BUF_SIZE) != HAL_OK)
+    {
+        k230_rx_rearm_err++;
+        return;
+    }
+    /* 关半满中断: 只关心 IDLE/收满事件, 否则 4 字节就会上报一次残帧 */
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
+}
+
+/**
+  * @brief  USART3 接收事件回调 (中断上下文): 解析 K230 数据帧
+  * @param  huart  USART3 句柄
+  * @param  size   本次实际收到的字节数 (IDLE 切帧上报)
+  * @note   通过 UART_Callback_RegisterEvent 注册, 由 bsp/uart/uart_callback.c
+  *         的 HAL_UARTEx_RxEventCallback 分发, 不直接覆写弱函数。
+  */
+void k230_read(UART_HandleTypeDef *huart, uint16_t size)
+{
+    /* 残帧(丢字节/对端半途复位): 丢弃并重新武装, 下一帧靠 IDLE 自动对齐 */
+    if (size != K230_RX_BUF_SIZE)
+    {
+        k230_rx_badlen++;
+        k230_arm_rx(huart);
+        return;
+    }
+
+    /* XOR 校验: byte[7] 应等于 byte[0]^...^byte[6], 不匹配则丢弃 */
+    uint8_t cs = 0;
+    for (uint8_t i = 0; i < K230_RX_BUF_SIZE - 1; i++)
+        cs ^= K230_Rx[i];
+    if (cs != K230_Rx[K230_RX_BUF_SIZE - 1])
+    {
+        k230_rx_badxor++;
+        k230_arm_rx(huart);
+        return;
+    }
+
+    k230_rx_frames++;
 
     if (K230_Rx[0] == 0x02)
     {
@@ -70,49 +118,76 @@ void k230_read(UART_HandleTypeDef *huart)
             bean_flag   = 1;
         }
     }
+    else if (K230_Rx[0] == 0x03)
+    {
+        /* 正面3数字帧: [2..4] = 正面三个数字 */
+        if (K230_Rx[2] != 0 && K230_Rx[3] != 0 && K230_Rx[4] != 0)
+        {
+            for (int i = 0; i < 3; i++)
+                front_number[i] = K230_Rx[i + 2];
+            front_number_flag = 1;
+        }
+    }
     else if (K230_Rx[0] == 0x01)
     {
-        /* 数字位置帧: [2..6] = 五个箱子的数字编号 */
+        /* 完整5数字帧: [2..6] = 五个箱子的数字编号(左到右) */
         if (K230_Rx[2] != 0 && K230_Rx[3] != 0 && K230_Rx[4] != 0 &&
             K230_Rx[5] != 0 && K230_Rx[6] != 0)
         {
             count++;
             for (int i = 0; i < 5; i++)
                 number_position[i] = K230_Rx[i + 2];
+            full_number_flag = 1;
         }
     }
+    else if (K230_Rx[0] == 0x0A)
+    {
+        /* ACK 计数而非置 1: Phase2 中 K230 会连发两个 0x0A(命令收到/识别完成),
+         * 若两帧间隔短于任务轮询周期, 用布尔标志会丢掉第二个, 导致主机白等超时。 */
+        if (k230_ack_flag < 255)
+            k230_ack_flag++;
+    }
 
-    /* 重新启动 DMA 接收 (DMA_NORMAL 模式, 每收满 8 字节触发一次回调) */
-    HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
+    /* 重新武装接收, 等待下一帧 */
+    k230_arm_rx(huart);
 }
 
 
 /* ==================== 公开接口 ==================== */
 
 /**
-  * @brief  初始化 K230 模块: 注册 USART2 回调 + 启动 DMA 接收
+  * @brief  初始化 K230 模块: 注册 USART3 回调 + 启动 DMA 接收
   * @note   在 App_Init 中 UART_Callback_Init 之后调用
   */
 void K230_Init(void)
 {
-    UART_Callback_Register(USART2, k230_read);
-    HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
+    __HAL_UART_CLEAR_OREFLAG(&huart3);
+    UART_Callback_RegisterEvent(USART3, k230_read);
+    UART_Callback_RegisterRestart(USART3, k230_arm_rx);  /* ORE/FE 后自动恢复 */
+    k230_arm_rx(&huart3);
 }
 
 /**
   * @brief  向 K230 发送命令
   * @param  command  命令码: K230_CMD_LOOK_BEAN/NUMBER/SIDE/CLOSE
-  *         1=开启看豆, 2=开启看中间数字, 3=看侧面数字, 6=关闭摄像头
+  *         2=看豆, 3=看正面数字, 1=看侧面数字, 6=关闭 (与K230端匹配)
   */
-void k230_write(uint8_t command)
+int k230_write(uint8_t command)
 {
     Command_Data[0] = command;
     Command_Data[1] = (command == K230_CMD_CLOSE) ? 0 : 1;
-    for (uint8_t i = 2; i < K230_RX_BUF_SIZE; i++)
+    for (uint8_t i = 2; i < K230_RX_BUF_SIZE - 1; i++)
         Command_Data[i] = 0;
 
-    HAL_UART_AbortTransmit(&huart2);  /* 复位 gState, 防止上次 DMA 未完成中断未触发导致卡死 */
-    HAL_UART_Transmit_DMA(&huart2, Command_Data, K230_RX_BUF_SIZE);
+    /* XOR 校验码: byte[7] = byte[0]^...^byte[6] */
+    uint8_t cs = 0;
+    for (uint8_t i = 0; i < K230_RX_BUF_SIZE - 1; i++)
+        cs ^= Command_Data[i];
+    Command_Data[K230_RX_BUF_SIZE - 1] = cs;
+
+    /* 返回值必须检查: 发送失败(总线忙/上一次 DMA 未完成)时静默丢命令,
+     * K230 收不到就永远不会应答, 表现为"莫名超时", 极难定位。 */
+    return (HAL_UART_Transmit(&huart3, Command_Data, K230_RX_BUF_SIZE, 100) == HAL_OK) ? 0 : -1;
 }
 
 
@@ -136,10 +211,10 @@ void k230_write(uint8_t command)
 
 /**
   * @brief  根据豆子颜色查找其在 number_position 中的位置(1~5), 执行 Action_1..5
-  * @param  key  目标豆子颜色: BEAN_GREEN(0x06)/BEAN_YELLOW(0x07)/BEAN_YUN(0x08)
-  * @note   颜色->目标值映射: 绿=2, 黄=1, 云=3 (与 K230 返回的 number_position 编码一致)
+  * @param  key  目标豆子颜色: BEAN_GREEN(0x06)/BEAN_YUN(0x07)/BEAN_YELLOW(0x08)
+  * @note   颜色->目标值映射: 绿=2, 芸=3, 黄=1 (与 K230 返回的 number_position 编码一致)
   */
-void Data_Handle1(uint8_t key)
+int Data_Handle1(uint8_t key)
 {
     uint8_t target = 0;
     uint8_t pos = 0;
@@ -147,9 +222,9 @@ void Data_Handle1(uint8_t key)
 
     /* 1、绑定对应目标值 */
     if      (key == BEAN_GREEN)  target = 2;   /* 0x06 绿豆 */
-    else if (key == BEAN_YELLOW) target = 1;   /* 0x07 黄豆 */
-    else if (key == BEAN_YUN)    target = 3;   /* 0x08 云豆 */
-    else                 return;
+    else if (key == BEAN_YUN)    target = 3;   /* 0x07 芸豆 */
+    else if (key == BEAN_YELLOW) target = 1;   /* 0x08 黄豆 */
+    else                 return -1;            /* 未知颜色 */
 
     /* 2、遍历 number_position, 查询目标值所在位置(1~5) */
     for (i = 0; i < 5; i++)
@@ -161,7 +236,9 @@ void Data_Handle1(uint8_t key)
         }
     }
 
-    /* 3、五位位置 switch, 调对应动作组 */
+    /* 3、五位位置 switch, 调对应动作组。
+     * pos==0 表示 number_position 里没有该数字(K230 识别错/推理失败),
+     * 必须把失败回报给调用方, 否则这颗豆子会被静默丢弃且毫无提示。 */
     switch (pos)
     {
         case 1: Action_1(); break;
@@ -169,7 +246,8 @@ void Data_Handle1(uint8_t key)
         case 3: Action_3(); break;
         case 4: Action_4(); break;
         case 5: Action_5(); break;
-        default: break;
+        default: return -2;                    /* 目标数字不在 number_position 中 */
     }
+    return pos;
 }
 

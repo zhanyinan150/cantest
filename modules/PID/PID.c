@@ -87,8 +87,12 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
     pid->Measure = measure;
     pid->Ref = ref;
 
-    /* Control period. */
-    pid->dt = 0.01f; /* Can be replaced by DWT_GetDeltaT(&pid->DWT_CNT). */
+    /* 控制周期(秒), 固定 10ms —— 必须与实际调用本函数的任务周期一致。
+     * 当前调用者是 DJIMotorTask (dji_motor.h: DJI_MOTOR_TASK_PERIOD = 10ms), 对得上。
+     * ⚠ 改 DJI_MOTOR_TASK_PERIOD 时必须同步改这里, 否则 Ki/Kd 的实际增益会
+     *   静默偏离标称值(周期翻倍则积分快一倍、微分弱一半), 表现为"PID 参数
+     *   突然不好使了"却查不出原因。想彻底解耦可换 DWT_GetDeltaT(&pid->DWT_CNT)。*/
+    pid->dt = 0.01f;
 
     if (pid->Improve & PID_SCurve_Acceleration)
     {
@@ -159,26 +163,39 @@ float PIDCalculate(PIDInstance *pid, float measure, float ref)
         pid->Err = 0.0f;
     }
 
+    /* 本周期的积分增量: 梯形法与矩形法二选一。
+     * 原实现是"先按矩形法 ITerm += ..., 再用 ITerm = 梯形值"直接覆盖,
+     * 等于把累积的积分量整个丢掉、退化成一个瞬时值 —— 积分作用完全失效,
+     * 且抵消了前面的变积分逻辑。此处改为先算增量、再统一累加。 */
+    float delta_i;
+    if (pid->Improve & PID_Trapezoid_Intergral)
+        delta_i = pid->Ki * (pid->Err + pid->Last_Err) * pid->dt / 2.0f;  /* 梯形法 */
+    else
+        delta_i = pid->Ki * pid->Err * pid->dt;                            /* 矩形法 */
+
     if (pid->Improve & PID_ChangingIntegrationRate)
     {
-        if (fabsf(pid->Err) <= pid->CoefB)
+        /* 变积分: 误差小全速积分, 误差中等按比例衰减, 误差过大不积分(抗饱和) */
+        float abs_err = fabsf(pid->Err);
+        if (abs_err <= pid->CoefB)
         {
-            pid->ITerm += pid->Ki * pid->Err * pid->dt;
+            pid->ITerm += delta_i;
         }
-        else if (fabsf(pid->Err) <= pid->CoefA + pid->CoefB)
+        else if (abs_err <= pid->CoefA + pid->CoefB)
         {
-            float rate = (pid->CoefA - fabsf(pid->Err) + pid->CoefB) / pid->CoefA;
-            pid->ITerm += pid->Ki * pid->Err * pid->dt * rate;
+            /* CoefA 为 0 会除零产生 inf/NaN, 并顺着 Output 污染整条控制链,
+             * 电机会收到一个荒唐的电流值。未配置 CoefA 时按"不积分"处理。 */
+            if (pid->CoefA > 0.0f)
+            {
+                float rate = (pid->CoefA - abs_err + pid->CoefB) / pid->CoefA;
+                pid->ITerm += delta_i * rate;
+            }
         }
+        /* abs_err > CoefA+CoefB: 误差过大, 本周期不积分 */
     }
     else
     {
-        pid->ITerm += pid->Ki * pid->Err * pid->dt;
-    }
-
-    if (pid->Improve & PID_Trapezoid_Intergral)
-    {
-        pid->ITerm = pid->Ki * (pid->Err + pid->Last_Err) * pid->dt / 2.0f;
+        pid->ITerm += delta_i;
     }
 
     if (pid->Improve & PID_Integral_Limit)
