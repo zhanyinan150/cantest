@@ -107,6 +107,29 @@ static int send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
     return -1;
 }
 
+/* ==================== 动作组文字桩 ====================
+ * K230.c 里 Action_1..Action_10 是 __weak 空桩, 这里以同名强定义覆写。
+ * 通讯测试阶段不接电机, 用文字打印代替实际 Motor_XYZ 调用, 括号里是接上
+ * 电机后要下发的参数(取自 app_init.c 里调好的那组), 方便对照动作序列。
+ *
+ * Action_N 对应"目标数字在 number_position 里的第 N 个位置"(左->右),
+ * 由 Data_Handle1 按豆子颜色查表后调用。
+ */
+static void act_stub(int box, const char *detail)
+{
+    char b[96];
+    snprintf(b, sizeof(b), "[ACT]   -> Action_%d: move to box %d | %s\r\n",
+             box, box, detail);
+    dbg(b);
+    osDelay(300);   /* 模拟机构动作耗时, 让日志有节奏便于观察 */
+}
+
+void Action_1(void) { act_stub(1, "Motor_XYZ(X left 0cm,  Y 0cm,  Z down/up) + servo release"); }
+void Action_2(void) { act_stub(2, "Motor_XYZ(X left 20cm, Y 0cm,  Z down/up) + servo release"); }
+void Action_3(void) { act_stub(3, "Motor_XYZ(X left 40cm, Y 0cm,  Z down/up) + servo release"); }
+void Action_4(void) { act_stub(4, "Motor_XYZ(X left 60cm, Y 0cm,  Z down/up) + servo release"); }
+void Action_5(void) { act_stub(5, "Motor_XYZ(X left 80cm, Y 0cm,  Z down/up) + servo release"); }
+
 static void action_1(void *argument)
 {
     (void)argument;
@@ -128,14 +151,22 @@ static void action_1(void *argument)
     k230_write(K230_CMD_CLOSE);
     dbg("[P1] ACK sent\r\n");
 
-    /* ---- Motor: grab beans ---- */
-    dbg("[ACT] >>> Motor: grab beans (start->left->middle->ready) <<<\r\n");
-    osDelay(1000);
+    /* ---- Motor: grab beans (文字占位, 括号内为接上电机后要下发的参数) ---- */
+    dbg("[ACT] >>> Motor: grab beans <<<\r\n");
+    dbg("[ACT]   1) start -> left bean : XYZ(x:R 44.0cm, y:F 185cm, z:U 35.0cm)\r\n");
+    osDelay(600);
+    dbg("[ACT]   2) -> middle bean     : XYZ(x:L 20.5cm, y:0,       z:0)\r\n");
+    osDelay(600);
+    dbg("[ACT]   3) -> ready for box   : XYZ(x:L 60.0cm, y:0,       z:0)\r\n");
+    osDelay(600);
 
     /* ======== Phase 2: front number ======== */
     /* ---- Motor: obstacle avoidance ---- */
     dbg("[ACT] >>> Motor: obstacle avoidance <<<\r\n");
-    osDelay(1000);
+    dbg("[ACT]   1) avoid #1 : XYZ(x:0,        y:B 100cm, z:0)\r\n");
+    osDelay(600);
+    dbg("[ACT]   2) avoid #2 : XYZ(x:R 65.0cm, y:B 160cm, z:0)\r\n");
+    osDelay(600);
 
     dbg("[P2] Send LOOK_NUMBER\r\n");
     if (send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER) != 0)
@@ -175,7 +206,8 @@ static void action_1(void *argument)
     /* ======== Phase 3: side number + inference ======== */
     /* ---- Motor: move to box ---- */
     dbg("[ACT] >>> Motor: move to box <<<\r\n");
-    osDelay(1000);
+    dbg("[ACT]   XYZ(x:0, y:B 58cm, z:0)\r\n");
+    osDelay(600);
 
     dbg("[P3] Send LOOK_SIDE\r\n");
     if (send_cmd_wait_ack_wait_data(K230_CMD_LOOK_SIDE, &full_number_flag) != 0)

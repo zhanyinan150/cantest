@@ -54,16 +54,55 @@ def send_ack():
     uart.write(frame)
 
 
+# 接收累积缓冲: 跨多次 poll 保留未成帧的残留字节
+_rx_acc = bytearray()
+
+
+def poll_frames():
+    """取走 UART 缓冲区里全部字节, 切出所有 XOR 校验通过的 8 字节帧。
+
+    与 k230_competition.py 保持一致。原来的 `uart.read()` + `len>=8` 写法有两个硬伤:
+      1) 读到半帧(如 3 字节)时整包丢弃, 那几个字节再也拿不回来, 后续永久错位;
+      2) 读到两帧(16 字节)时只看前 8 个, 第二帧静默丢失 —— STM32 重试时必然发生。
+    现在累积到 _rx_acc, 逐帧校验取出, 校验失败滑窗 1 字节重新找边界。
+    """
+    global _rx_acc
+    n = uart.any()
+    if n:
+        chunk = uart.read(n)
+        if chunk:
+            _rx_acc.extend(chunk)
+
+    frames = []
+    while len(_rx_acc) >= FRAME_LEN:
+        if verify_xor(_rx_acc[:FRAME_LEN]):
+            frames.append(bytes(_rx_acc[:FRAME_LEN]))
+            del _rx_acc[:FRAME_LEN]
+        else:
+            del _rx_acc[:1]
+    if len(_rx_acc) > 64:
+        del _rx_acc[:-16]
+    return frames
+
+
+def flush_rx():
+    """清空接收缓冲, 阶段切换时丢弃上一阶段的残留/重发帧"""
+    global _rx_acc
+    _rx_acc = bytearray()
+    n = uart.any()
+    if n:
+        uart.read(n)
+
+
 def wait_for_cmd(expected_cmd, timeout_ms=30000):
     start = time.ticks_ms()
     while True:
-        data = uart.read()
-        if data and len(data) >= FRAME_LEN:
-            if verify_xor(data[:FRAME_LEN]) and data[0] == expected_cmd:
+        for f in poll_frames():
+            if f[0] == expected_cmd:
                 return True
-            else:
-                print(f"  [WARN] recv: {data[:FRAME_LEN].hex()}, expected 0x{expected_cmd:02X}")
-        if timeout_ms > 0 and time.ticks_ms() - start > timeout_ms:
+            print("  [WARN] discard 0x%02X, waiting 0x%02X" % (f[0], expected_cmd))
+        # ticks_diff 处理计数回绕, 直接相减在 ticks_ms 翻转时会得到负数
+        if timeout_ms > 0 and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
             return False
         time.sleep_ms(10)
 
@@ -107,12 +146,23 @@ def mock_recognize_side_number(front_numbers):
 
 
 def infer_fifth(known_nums):
-    all_nums = {0x01, 0x02, 0x03, 0x04, 0x05}
+    """与 k230_competition.py 保持一致: 保证总是返回合法数字(1~5)。
+
+    原实现在已知 4 个数字不互异时返回 0x00, 而 STM32 端 K230.c 要求 0x01 帧的
+    byte[2..6] 全部非 0, 会导致 full_number_flag 永不置位 -> 主机重试到超时放弃。
+    """
+    all_nums = [0x01, 0x02, 0x03, 0x04, 0x05]
     known_set = set(known_nums) - {0x00}
-    if len(known_set) == 4:
-        missing = all_nums - known_set
-        return missing.pop()
-    return 0x00
+    missing = [n for n in all_nums if n not in known_set]
+
+    if len(known_set) == 4 and len(missing) == 1:
+        return missing[0]
+    if missing:
+        print("  [WARN] known numbers not distinct %s, guess 5th=0x%02X"
+              % (["0x%02X" % n for n in known_nums], missing[0]))
+        return missing[0]
+    print("  [WARN] all 5 occupied, fallback 5th=0x01")
+    return 0x01
 
 
 # ======================== 主函数 ========================
@@ -146,6 +196,8 @@ if __name__ == "__main__":
         print("  STM32 ACK received\n")
 
         # ============ Phase 2: 等待正面数字识别命令 ============
+        # 丢弃上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
+        flush_rx()
         print("========== Phase 2: Waiting for LOOK_NUMBER (0x03) ==========")
         if not wait_for_cmd(CMD_START_FRONT, timeout_ms=30000):
             print("Phase 2 command timeout!")
@@ -165,6 +217,8 @@ if __name__ == "__main__":
         print("  STM32 ACK received\n")
 
         # ============ Phase 3: 等待侧面数字识别命令 ============
+        # 丢弃上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
+        flush_rx()
         print("========== Phase 3: Waiting for LOOK_SIDE (0x01) ==========")
         if not wait_for_cmd(CMD_START_SIDE, timeout_ms=30000):
             print("Phase 3 command timeout!")
