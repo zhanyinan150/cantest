@@ -15,6 +15,7 @@
 #include "cmsis_os.h"
 #include "K230.h"
 #include "usart.h"
+#include "bsp_log.h"     /* printf 经日志队列 -> LogTask DMA 发 USART1 */
 #include <string.h>
 #include <stdio.h>
 
@@ -37,11 +38,19 @@ void Action_Init(void)
     osThreadNew(action_1, NULL, &attr);
 }
 
+/* 调试输出: 走 printf -> fputc 行缓冲 -> 日志队列 -> LogTask DMA 发 USART1。
+ * 不可直接 HAL_UART_Transmit(&huart1,...): 会与 LogTask 的 DMA 发送抢同一个
+ * USART1, 正是 bsp_log.c 文件头列为 HardFault 根因的用法。 */
 static void dbg(const char *s)
 {
-    HAL_UART_Transmit(&huart1, (uint8_t *)s, strlen(s), 100);
+    printf("%s", s);
 }
 
+/**
+  * @brief  等待事件标志(计数器语义), 成功后消费一个事件
+  * @note   k230_ack_flag 是计数器(K230 可能连发多个 ACK), bean_flag /
+  *         full_number_flag 是 0/1, 两者都适用"非零即有事件, 取走减一"。
+  */
 static int wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
 {
     uint32_t elapsed = 0;
@@ -52,7 +61,7 @@ static int wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
         if (elapsed >= timeout_ms)
             return -1;
     }
-    *flag = 0;
+    (*flag)--;          /* 消费一个事件, 不要粗暴清零以免丢掉已到达的下一个 */
     return 0;
 }
 
@@ -61,11 +70,16 @@ static int send_cmd_and_wait_ack(uint8_t cmd)
 {
     for (int retry = 0; retry < K230_RETRY_MAX; retry++)
     {
-        k230_ack_flag = 0;
-        k230_write(cmd);
+        k230_ack_flag = 0;                       /* 丢弃上一轮残留 ACK */
+        if (k230_write(cmd) != 0)                /* 发送失败(总线忙)直接重试 */
+        {
+            dbg("[RTY] uart tx failed\r\n");
+            osDelay(50);
+            continue;
+        }
         if (wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS) == 0)
             return 0;
-        dbg("[RTY] retry...\r\n");
+        dbg("[RTY] no ack, retry...\r\n");
     }
     return -1;
 }
@@ -75,11 +89,20 @@ static int send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
 {
     for (int retry = 0; retry < K230_RETRY_MAX; retry++)
     {
+        /* 发命令前清数据标志: 否则上一轮/上电前残留的 1 会让 wait_flag 立刻
+         * 返回成功, 而 bean_color/number_position 里是过期数据。 */
+        *data_flag = 0;
+
         if (send_cmd_and_wait_ack(cmd) != 0)
             continue;
         if (wait_flag(data_flag, K230_DATA_TIMEOUT_MS) == 0)
             return 0;
-        dbg("[RTY] data timeout, resend cmd...\r\n");
+
+        /* 数据超时: 此时 K230 多半卡在"等主机 ACK"这一步, 直接重发识别命令
+         * 它是不认的(它只等 0x06)。先补发一个 CLOSE 让对端退回空闲态, 再重发。 */
+        dbg("[RTY] data timeout, send CLOSE to resync then resend\r\n");
+        k230_write(K230_CMD_CLOSE);
+        osDelay(200);
     }
     return -1;
 }
@@ -122,18 +145,21 @@ static void action_1(void *argument)
     }
     dbg("[P2] ACK received, wait recognition done...\r\n");
 
-    /* Phase 2: K230 识别完发 ACK, 不发数据帧 */
+    /* Phase 2: K230 识别完再发一个 ACK(同样是 0x0A), 不发数据帧。
+     * 注意不要在这里清零 k230_ack_flag: 若 K230 识别很快, 第二个 ACK 可能在
+     * send_cmd_and_wait_ack 返回前就已到达并被计数, 清零会把它抹掉导致白等。 */
     {
         int p2_ok = 0;
         for (int retry = 0; retry < K230_RETRY_MAX; retry++)
         {
-            k230_ack_flag = 0;
             if (wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) == 0)
             {
                 p2_ok = 1;
                 break;
             }
-            dbg("[P2] recognition timeout, resend LOOK_NUMBER\r\n");
+            dbg("[P2] recognition timeout, resync + resend LOOK_NUMBER\r\n");
+            k230_write(K230_CMD_CLOSE);
+            osDelay(200);
             send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER);
         }
         if (!p2_ok)
@@ -166,22 +192,23 @@ static void action_1(void *argument)
 
     bean_locked = 0;
 
-    /* ---- place beans ---- */
-    dbg("[ACT] >>> Place beans: <<<\r\n");
-    snprintf(buf, sizeof(buf), "[ACT] 豆子1: %02X -> 位置%d\r\n",
-             bean_color[0], 0);
-    dbg(buf);
-    Data_Handle1(bean_color[0]);
-
-    snprintf(buf, sizeof(buf), "[ACT] 豆子2: %02X -> 位置%d\r\n",
-             bean_color[1], 0);
-    dbg(buf);
-    Data_Handle1(bean_color[1]);
-
-    snprintf(buf, sizeof(buf), "[ACT] 豆子3: %02X -> 位置%d\r\n",
-             bean_color[2], 0);
-    dbg(buf);
-    Data_Handle1(bean_color[2]);
+    /* ---- place beans ----
+     * Data_Handle1 返回命中的箱子位置(1~5), 负值=失败必须报出来:
+     *   -1 = 豆子颜色非法(K230 发来的不是 0x06/07/08)
+     *   -2 = 该数字不在 number_position 里(识别错或第5位推理失败)
+     * 原来忽略返回值, 这两种情况下豆子会被静默丢弃, 现场完全看不出发生了什么。*/
+    dbg("[ACT] >>> Place beans <<<\r\n");
+    for (int b = 0; b < 3; b++)
+    {
+        int pos = Data_Handle1(bean_color[b]);
+        if (pos > 0)
+            snprintf(buf, sizeof(buf), "[ACT] bean%d color=%02X -> box %d\r\n",
+                     b + 1, bean_color[b], pos);
+        else
+            snprintf(buf, sizeof(buf), "[ACT] bean%d color=%02X -> SKIPPED (err %d)\r\n",
+                     b + 1, bean_color[b], pos);
+        dbg(buf);
+    }
     dbg("[ACT] Done\r\n");
 
 idle:

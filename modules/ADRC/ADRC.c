@@ -98,9 +98,11 @@ float ADRC_Compute(ADRC_Controller *adrc, float ref, float feedback) {
     fh = fal(adrc->e1, adrc->alpha1, adrc->delta) + fal(adrc->e2, adrc->alpha2, adrc->delta);
     u0 = adrc->beta1 * fh;
     
-    /* 计算控制量并考虑扰动补偿 */
+    /* 计算控制量并考虑扰动补偿。
+     * b0 是被控对象增益, 未配置时为 0 会除零得到 inf/NaN, 且 NaN 参与后面的
+     * 限幅比较全部为假, 会原样传到电机输出。b0 无效时退化为不做扰动补偿。 */
     adrc->u0 = u0;
-    adrc->u = adrc->u0 - adrc->z03 / adrc->b0;
+    adrc->u = (adrc->b0 != 0.0f) ? (adrc->u0 - adrc->z03 / adrc->b0) : adrc->u0;
     
     /* 输出限幅 */
     if (adrc->u > adrc->max_output) {
@@ -206,7 +208,13 @@ static float sign(float x) {
  */
 static float fal(float e, float alpha, float delta) {
     float abs_e = fabsf(e);
-    
+
+    /* delta<=0 时 powf(delta, 1-alpha) 为 0 或 NaN, 除下去会污染整条控制链。
+     * 线性区宽度无意义时直接返回线性项(等价于 delta 退化为纯比例)。 */
+    if (delta <= 0.0f) {
+        return e;
+    }
+
     if (abs_e <= delta) {
         return e / powf(delta, 1.0f - alpha);
     } else {

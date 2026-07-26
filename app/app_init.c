@@ -42,7 +42,12 @@
 #define MOTOR_AUTO_STARTUP_DELAY   2000               /* 上电后等待系统稳定(ms), 等电机使能+M2006反馈 */
 
 /* ---- 内部任务函数 ---- */
+/* MotorAutoTask 当前随 #if 0 一起停用, 但函数体保留(里面存着调好的动作序列
+ * 参数, 恢复电机时直接用)。放在同一个 #if 0 里可避免 "declared but never
+ * referenced" 警告, 又不丢失这段参数。 */
+#if 0
 static void MotorAutoTask(void *argument);
+#endif
 
 /**
   * @brief  应用层初始化: 子系统初始化 + 任务创建
@@ -117,6 +122,7 @@ void App_Init(void)
   */
 
 
+#if 0  /* 随 App_Init 里的创建代码一起停用, 保留动作参数备查 */
 static void MotorAutoTask(void *argument)
 {
   (void)argument;
@@ -171,3 +177,4 @@ static void MotorAutoTask(void *argument)
      osDelay(1000);
    }
 }
+#endif /* MotorAutoTask 停用 */

@@ -99,7 +99,7 @@ static uint8_t sender_enable_flag[6] = {0};
  * @brief 根据电调/拨码开关上的ID,根据说明书的默认id分配方式计算发送ID和接收ID,
  *        并对电机进行分组以便处理多电机控制命令
  */
-static void MotorSenderGrouping(DJIMotorInstance *motor, CAN_Init_Config_s *config)
+static int MotorSenderGrouping(DJIMotorInstance *motor, CAN_Init_Config_s *config)
 {
     uint8_t motor_id = config->tx_id - 1; // 下标从零开始,先减一方便赋值
     uint8_t motor_send_num;
@@ -128,10 +128,12 @@ static void MotorSenderGrouping(DJIMotorInstance *motor, CAN_Init_Config_s *conf
         {
             if (dji_motor_instance[i]->motor_can_instance->can_handle == config->can_handle && dji_motor_instance[i]->motor_can_instance->rx_id == config->rx_id)
             {
-                LOGERROR("[dji_motor] ID crash. Check in debug mode, add dji_motor_instance to watch to get more information.");
-                uint16_t can_bus = 1; // 只使用CAN1
-                while (1) // 6020的id 1-4和2006/3508的id 5-8会发生冲突(若有注册,即1!5,2!6,3!7,4!8) (1!5!,LTC! (((不是)
-                    LOGERROR("[dji_motor] id [%d], can_bus [%d]", config->rx_id, can_bus);
+                /* 原为 while(1) 里反复 LOGERROR: 既卡死开机, 日志又因 LogTask
+                 * 得不到调度而发不出来。改为报一次错并返回, 由 DJIMotorInit
+                 * 的 NULL 检查上报给调用方(Lift_Init 会打印并返回 -1)。
+                 * 冲突来源: 6020 的 id 1-4 与 2006/3508 的 id 5-8 共用反馈 ID。*/
+                LOGERROR("[dji_motor] ID crash: rx_id 0x%X already registered on same CAN", config->rx_id);
+                return -1;
             }
         }
         break;case GM6020:
@@ -153,18 +155,21 @@ static void MotorSenderGrouping(DJIMotorInstance *motor, CAN_Init_Config_s *conf
         {
             if (dji_motor_instance[i]->motor_can_instance->can_handle == config->can_handle && dji_motor_instance[i]->motor_can_instance->rx_id == config->rx_id)
             {
-                LOGERROR("[dji_motor] ID crash. Check in debug mode, add dji_motor_instance to watch to get more information.");
-                uint16_t can_bus = 1; // 只使用CAN1
-                while (1) // 6020的id 1-4和2006/3508的id 5-8会发生冲突(若有注册,即1!5,2!6,3!7,4!8) (1!5!,LTC! (((不是)
-                    LOGERROR("[dji_motor] id [%d], can_bus [%d]", config->rx_id, can_bus);
+                /* 原为 while(1) 里反复 LOGERROR: 既卡死开机, 日志又因 LogTask
+                 * 得不到调度而发不出来。改为报一次错并返回, 由 DJIMotorInit
+                 * 的 NULL 检查上报给调用方(Lift_Init 会打印并返回 -1)。
+                 * 冲突来源: 6020 的 id 1-4 与 2006/3508 的 id 5-8 共用反馈 ID。*/
+                LOGERROR("[dji_motor] ID crash: rx_id 0x%X already registered on same CAN", config->rx_id);
+                return -1;
             }
         }
         break;
 
     default: // other motors should not be registered here
-        while (1)
-            LOGERROR("[dji_motor]You must not register other motors using the API of DJI motor."); // 其他电机不应该在这里注册
+        LOGERROR("[dji_motor] unsupported motor_type %d, only M2006/M3508/GM6020", (int)motor->motor_type);
+        return -1;
     }
+    return 0;
 }
 
 /**
@@ -249,7 +254,10 @@ DJIMotorInstance *DJIMotorInit(Motor_Init_Config_s *config)
     // 后续增加电机前馈控制器(速度和电流)
 
     // 电机分组,因为至多4个电机可以共用一帧CAN控制报文
-    MotorSenderGrouping(instance, &config->can_init_config);
+    if (MotorSenderGrouping(instance, &config->can_init_config) != 0) {
+        vPortFree(instance);
+        return NULL;
+    }
 
     // 注册电机到CAN总线
     config->can_init_config.can_module_callback = DecodeDJIMotor; // set callback

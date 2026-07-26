@@ -7,8 +7,10 @@
  * @attention
  *
  * 升降系统，使用 1 个 M2006 电机：
- * - 控制单位：位移（厘米），负值表示向下运动
- * - 机械参数：主动轮直径 18cm，36:1 减速比
+ * - 控制单位：位移（厘米），向上为正、向下为负
+ * - 机械参数：主动轮直径与减速比统一由 mech_params.h 定义
+ *   (LIFT_WHEEL_DIAMETER_M / LIFT_GEAR_RATIO)，勿在此处硬写数值——
+ *   本行原先写"直径 18cm"，与 mech_params.h 的 0.032m(3.2cm) 矛盾，已删。
  * - PID 参数移植自 2025EPIQZJ 工程 lift.c
  *   外环(角度环) + 内环(速度环) 串级，不使用电流环(C610 电调自带)。
  *
@@ -115,11 +117,11 @@ int Lift_Init(void)
 
     lift_motor = DJIMotorInit(&m2006_config);
     if (lift_motor == NULL) {
-        printf("升降系统电机初始化失败!\r\n");
+        printf("[lift] motor init FAILED!\r\n");
         return -1;
     }
     DJIMotorEnable(lift_motor);
-    printf("升降系统初始化完成!\r\n");
+    printf("[lift] init done\r\n");
 
     // 创建升降控制任务
     const osThreadAttr_t liftTask_attributes = {
@@ -130,7 +132,7 @@ int Lift_Init(void)
 
     liftTaskHandle = osThreadNew(LiftTask, NULL, &liftTask_attributes);
     if (liftTaskHandle == NULL) {
-        printf("升降任务创建失败!\r\n");
+        printf("[lift] task create FAILED!\r\n");
         return -1;
     }
 
@@ -145,7 +147,7 @@ int Lift_Init(void)
  */
 void LiftTask(void *argument)
 {
-    printf("升降任务启动\r\n");
+    printf("[lift] task started\r\n");
 
     /* vTaskDelayUntil 保证严格 20ms 周期, 避免 osDelay 累积抖动 */
     TickType_t xLastWakeTime = xTaskGetTickCount();
@@ -192,9 +194,14 @@ static void Lift_ControlMotors(void)
 
 /**
  * @brief 升降向上移动
- * @param displacement 相对当前位置的向上增量 (cm, 正值)
+ * @param displacement 向上增量 (cm, 正值)
  * @retval 0: 成功, -1: 失败
- * @note 电机安装方向相反(motor_reverse_flag=REVERSE), 故向上=位移减小。
+ * @note 位移坐标: 向上为正, 向下为负。电机安装方向的取反已经由
+ *       motor_reverse_flag=MOTOR_DIRECTION_REVERSE 在 dji_motor 层处理,
+ *       本层不需要再翻符号, 故"向上"就是 target 增大。
+ * @note 增量叠加在 target_displacement 而非 current_displacement 上:
+ *       连续调用可以排队(不会因为上一段还没走完就被吃掉), 但如果上一段
+ *       因堵转/超时没走到位, 偏差会累积。需要绝对定位时用 Lift_MoveTo。
  */
 int Lift_Up(float displacement)
 {
@@ -204,9 +211,10 @@ int Lift_Up(float displacement)
 
 /**
  * @brief 升降向下移动
- * @param displacement 相对当前位置的向下增量 (cm, 正值)
+ * @param displacement 向下增量 (cm, 正值)
  * @retval 0: 成功, -1: 失败
- * @note 电机安装方向相反(motor_reverse_flag=REVERSE), 故向下=位移增大。
+ * @note 位移坐标: 向上为正, 向下为负, 故"向下"就是 target 减小。
+ *       方向取反由 motor_reverse_flag 在 dji_motor 层处理, 见 Lift_Up 说明。
  */
 int Lift_Down(float displacement)
 {
@@ -224,7 +232,7 @@ int Lift_Stop(void)
     lift_status.target_displacement = lift_status.current_displacement;
     lift_status.is_moving = false;
 
-    printf("升降运动已停止在位移: ");
+    printf("[lift] stopped at ");
     Log_PrintFloat2("", lift_status.current_displacement);
     printf("cm\r\n");
     return 0;
@@ -340,7 +348,7 @@ int Lift_MoveTo(float target_displacement)
 {
     if (!lift_status.enabled)
     {
-        printf("升降系统未使能!\r\n");
+        printf("[lift] system not enabled!\r\n");
         return -1;
     }
 

@@ -33,6 +33,29 @@ int16_t diff=0;
 **********************************************************/
 
 /**
+ * @brief  UART5 下发一条 Emm_V5 命令 (阻塞等 DMA 走完)
+ * @retval 0=成功, -1=DMA 启动失败(命令未发出)
+ * @note   收敛原先散落 13 处的裸 HAL_UART_Transmit_DMA 调用, 统一做两件事:
+ *
+ *   1) 检查返回值。原实现全部忽略, DMA 启动失败时命令被静默吞掉, 电机不动却
+ *      没有任何提示, 只能靠示波器才能发现"根本没发出去"。
+ *
+ *   2) AbortTransmit 复位 gState。UART5 之前没在 NVIC 使能全局中断, 导致
+ *      USART 的 TC 中断进不去、UART_EndTransmit_IT 不执行、gState 永久停在
+ *      BUSY_TX, 于是第二条命令起全部返回 HAL_BUSY —— 这才是要 Abort 的原因。
+ *      现已在 usart.c 里补上 HAL_NVIC_EnableIRQ(UART5_IRQn), Abort 只作为
+ *      上一帧异常未完成时的兜底保留。
+ */
+static int Emm_V5_SendCmd(const uint8_t *cmd, uint16_t len)
+{
+  HAL_UART_AbortTransmit(&huart5);          /* 兜底: 清掉上一帧的残留状态 */
+  if (HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd, len) != HAL_OK)
+    return -1;
+  osDelay(20);                              /* 等 DMA 搬完 + TC 中断复位 gState */
+  return 0;
+}
+
+/**
   * @brief    将当前位置清零
   * @param    addr  ：电机地址
   * @retval   地址 + 功能码 + 命令状态 + 校验字节
@@ -48,9 +71,7 @@ void Emm_V5_Reset_CurPos_To_Zero(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,4);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 4);
 }
 
 /**
@@ -69,9 +90,7 @@ void Emm_V5_Reset_Clog_Pro(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,4);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 4);
 }
 
 /**
@@ -110,9 +129,7 @@ void Emm_V5_Read_Sys_Params(uint8_t addr, SysParams_t1 s)
   cmd[i] = 0x6B; ++i;                   // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,i);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, i);
 }
 
 /**
@@ -135,9 +152,7 @@ void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
   cmd[5] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,6);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 6);
 }
 
 /**
@@ -160,9 +175,7 @@ void Emm_V5_Modify_Ctrl_Mode(uint8_t addr, bool svF, uint8_t ctrl_mode)
   cmd[5] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,6);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 6);
 }
 
 /**
@@ -190,9 +203,7 @@ void Emm_V5_Vel_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, bo
   cmd[7] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,8);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 8);
 }
 
 /**
@@ -226,9 +237,7 @@ void Emm_V5_Pos_Control(uint8_t addr, uint8_t dir, uint16_t vel, uint8_t acc, ui
   cmd[12] =  0x6B;                      // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,13);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 13);
 }
 
 /**
@@ -249,9 +258,7 @@ void Emm_V5_Stop_Now(uint8_t addr, bool snF)
   cmd[4] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 5);
 }
 
 /**
@@ -270,9 +277,7 @@ void Emm_V5_Synchronous_motion(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,4);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 4);
 }
 
 /**
@@ -293,9 +298,7 @@ void Emm_V5_Origin_Set_O(uint8_t addr, bool svF)
   cmd[4] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 5);
 }
 
 /**
@@ -339,9 +342,7 @@ void Emm_V5_Origin_Modify_Params(uint8_t addr, bool svF, uint8_t o_mode, uint8_t
   cmd[19] =  0x6B;                      // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,20);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 20);
 }
 
 /**
@@ -363,9 +364,7 @@ void Emm_V5_Origin_Trigger_Return(uint8_t addr, uint8_t o_mode, bool snF)
   cmd[4] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 5);
 }
 
 /**
@@ -384,9 +383,7 @@ void Emm_V5_Origin_Interrupt(uint8_t addr)
   cmd[3] =  0x6B;                       // 校验字节
 
   // 发送命令 (UART5 DMA)
-  HAL_UART_AbortTransmit(&huart5);  // 强制复位 gState (DMA 完成中断未触发, 不截断已发完的数据)
-  HAL_UART_Transmit_DMA(&huart5, (uint8_t *)cmd,5);
-  osDelay(20);                          // 等 DMA 完成 + gState 复位
+  Emm_V5_SendCmd(cmd, 5);
 }
 //2,4和1,3为同边||右前2后4，1方向前进||左前1后3，0方向前进
 void Motor_VelStraight(uint8_t Speed,uint8_t acc)

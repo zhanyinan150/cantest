@@ -81,7 +81,14 @@ E:/UV4/UV4.exe -j0 -b cantest.uvprojx -o build_log.txt
 
 | 命令 | 格式 | 说明 |
 |------|------|------|
-| `mxyz` | `mxyz xdir xvel xacc xdist ydir yvel yacc ydist zdir zvel zacc zdist` | XYZ 三轴联动(阻塞) |
+| `mxyz` | `mxyz xdir xvel xacc xdist ydir yvel yacc ydist zdir zvel zacc zdist` | XYZ 三轴联动 |
+
+> ⚠️ 命令通道当前**未接通**:`CMD_Dispatch` 无消费者(CommandTask 不存在),
+> `mxyz` 与 lift 的 10 条命令均注册了但无法触发。需要时补一个消费
+> `UART_Callback_GetCmdQueue()` 的任务即可激活。
+>
+> ⚠️ `Motor_XYZ` 当前**非阻塞**:到位轮询代码在 `motor.c` 里被整段注释,
+> 发完命令即返回,不检测堵转/超时。详见审核文档 U-3。
 
 - 方向:`0`=CW,`1`=CCW(实际运动方向按电机安装)
 - 速度:0-3000 RPM,加速度:0-255 档(0=直接启动)
@@ -115,9 +122,19 @@ USART1 DMA 队列驱动,避免多任务并发抢 USART1 致 HardFault:
 - `printf` 也走队列(fputc 行缓冲入队)
 - 输出到 PA9(USART1),115200 或 USB CDC
 
+> ⚠️ **不要在任何地方直接 `HAL_UART_Transmit(&huart1, ...)`** —— 会与 LogTask 的 DMA
+> 抢同一个 USART1。日志/调试输出一律走 `printf` 或 `LOG*` 宏。
+>
+> USART1/USART3/UART5 的 NVIC 全局中断必须使能(`usart.c` MspInit + `stm32f4xx_it.c`)。
+> 缺了它 `HAL_UART_Transmit_DMA` 的 TC 中断进不去,`gState` 会永久卡在 BUSY_TX,
+> 日志发完第一行就彻底停摆。用 CubeMX 重新生成后请核对这三个中断仍然勾着。
+
 ## K230 视觉
 
 `view/` 目录 Python 脚本(K230 CanMV), 通讯走 UART3 (pin50/51) <-> STM32 USART3 (PB10/PB11), 115200 8N1, 8字节定长帧 + XOR 校验。
+
+STM32 侧收帧用 `HAL_UARTEx_ReceiveToIdle_DMA` 按 IDLE 空闲切帧(不是定长 DMA),
+丢字节后靠帧间空隙自动重新对齐; K230 侧用累积缓冲 + 滑窗重同步。两侧都能自愈错帧。
 
 ### 通讯协议 (STM32 主机 / K230 从机)
 
@@ -141,7 +158,12 @@ USART1 DMA 队列驱动,避免多任务并发抢 USART1 致 HardFault:
 
 ## 注意事项
 
-1. **地址冲突**:Y 轴步进 ID=1,2 与底盘左右轮冲突,二者不可同时启用。当前启用 XYZ(`Motor_Init`),停用底盘(`Chassis_Init` 注释)。
+> 完整的代码审核结果、已修复项与待确认项见 [代码审核与修复记录.md](代码审核与修复记录.md)。
+
+0. **当前启用状态**:测试阶段 `app_init.c` 里 `Lift_Init` / `Emm_V5_CAN_Init` / `Motor_Init`
+   均被 `#if 0` 停用(没接电机会崩),实际只跑 K230 通讯(`K230_Init` + `Action_Init`)。
+   恢复电机前请先读审核文档「未修复」一节,尤其是轮径标定和 Y 轴方向。
+1. **地址冲突**:Y 轴步进 ID=1,2 与底盘左右轮冲突,二者不可同时启用。
 2. **位置模式运动模式**:Emm42_V5.0 只有 `00`(相对上次目标)/`01`(绝对),无 `02`(相对当前)。距离移动用 `00`,两次位置命令间不可插速度模式,否则目标基准漂移。
 3. **升降轮径**:`LIFT_WHEEL_DIAMETER_M=0.032`(3.2cm),按实物量取后改 `mech_params.h`。
 4. **细分变更**:改电机细分时同步改 `mech_params.h` 的 `*_MICROSTEP`,每转脉冲自动 = 200×细分。

@@ -29,8 +29,9 @@
 /* ---- 通信参数 ---- */
 #define K230_RX_BUF_SIZE    8       /* K230 每帧收发 8 字节 */
 
-/* ---- K230 命令码 (k230_write 参数, byte[0], 与 K230 端 uart_flag 匹配) ---- */
-/* 2=看豆(cam1), 3=看正面数字(cam2), 1=看侧面数字(cam0), 6=关闭 */
+/* ---- K230 命令码 (k230_write 参数, byte[0], 与 K230 端匹配) ----
+ * 摄像头对应关系以 view/K230比赛通讯协议.md 与 k230_competition.py 为准:
+ *   2=看豆(cam2), 3=看正面数字(cam1), 1=看侧面数字(cam0), 6=关闭/应答 */
 #define K230_CMD_LOOK_BEAN      2
 #define K230_CMD_LOOK_NUMBER    3
 #define K230_CMD_LOOK_SIDE      1
@@ -65,8 +66,15 @@ extern __IO uint8_t front_number_flag;
 extern __IO uint8_t full_number_flag;
 /* 数字数据帧计数(每收到一帧非全零 number_position 自增) */
 extern __IO uint8_t count;
-/* K230 ACK (0x0A) 就绪标志(1=收到K230应答), 消费后清零 */
+/* K230 ACK (0x0A) 计数器: 每收到一帧 0x0A 自增, 消费后自减或清零。
+ * 用计数器而非布尔标志, 避免 Phase2 连发两个 ACK 时丢掉第二个。 */
 extern __IO uint8_t k230_ack_flag;
+
+/* ---- 接收统计(诊断用, 调试器观察是否丢帧) ---- */
+extern __IO uint32_t k230_rx_frames;     /* 成功解析的整帧数 */
+extern __IO uint32_t k230_rx_badxor;     /* XOR 校验失败帧数 */
+extern __IO uint32_t k230_rx_badlen;     /* 长度非 8 的残帧数 */
+extern __IO uint32_t k230_rx_rearm_err;  /* 重新武装 DMA 失败次数 */
 
 /* ---- K230 触发的动作组 (在 action.c 中实现, 此处仅声明) ----
  * Data_Handle1 根据 key(豆子颜色) 查 number_position 得位置 1~5, 调 Action_1..5
@@ -92,34 +100,26 @@ extern void Action_10(void);
 void K230_Init(void);
 
 /**
-  * @brief  USART3 DMA 接收完成回调: 解析 K230 数据帧 + 重启 DMA 接收
-  * @note   由 UART_Callback_Register 注册, DMA 收满 8 字节后中断上下文调用;
-  *         也可在外部手动调用以重新解析当前缓冲 (需传入 &huart3)
+  * @brief  USART3 接收事件回调: IDLE 切帧后解析 K230 数据帧 + 重新武装接收
+  * @param  huart  USART3 句柄
+  * @param  size   本次收到的字节数, 非 8 视为残帧丢弃
+  * @note   由 UART_Callback_RegisterEvent 注册, 中断上下文调用。
   */
-void k230_read(UART_HandleTypeDef *huart);
+void k230_read(UART_HandleTypeDef *huart, uint16_t size);
 
 /**
   * @brief  向 K230 发送命令
   * @param  command  命令码: K230_CMD_LOOK_BEAN/NUMBER/SIDE/CLOSE
+  * @retval 0=发送成功, -1=发送失败(总线忙/超时), 调用方应重试
   */
-void k230_write(uint8_t command);
+int k230_write(uint8_t command);
 
 /**
   * @brief  根据 key 查找其在 number_position 中的位置(1~5), 执行 Action_1..5
   * @param  key  目标豆子颜色: BEAN_GREEN/BEAN_YELLOW/BEAN_YUN
+  * @retval >0 命中的位置(1~5); -1=未知颜色; -2=该数字不在 number_position 中
+  *         (K230 识别错或第5位推理失败, 调用方须处理, 不可当成功)
   */
-void Data_Handle1(uint8_t key);
-
-/**
-  * @brief  Data_Handle1 的第二组动作 (Action_6..10)
-  * @param  key  目标豆子颜色: BEAN_GREEN/BEAN_YELLOW/BEAN_YUN
-  */
-void Data_Handle1_1(uint8_t key);
-
-/**
-  * @brief  LED 闪烁显示 bean_color 序列 (诊断用, 须在任务上下文调用)
-  *         黄豆闪1次, 绿豆闪2次, 云豆闪3次; 阻塞等待 bean_flag
-  */
-void Bean_Show(void);
+int Data_Handle1(uint8_t key);
 
 #endif /* __K230_H */

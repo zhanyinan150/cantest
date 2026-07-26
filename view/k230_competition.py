@@ -42,6 +42,10 @@ CLASS_MAP = {
 
 # ======================== 通信常量 ========================
 FRAME_LEN = 8
+# 识别超时(ms): 原实现三个识别循环都是 while True 无超时, 一旦视野被遮挡/
+# 光照不足/模型漏检, 会永远卡在循环里且完全不读 UART。此时 STM32 那边 15s
+# 超时后重发命令 K230 根本收不到, 双方死锁直到比赛结束。
+RECOGNIZE_TIMEOUT_MS = 20000
 CMD_START_BEAN = 0x02
 CMD_START_FRONT = 0x03
 CMD_START_SIDE = 0x01
@@ -78,6 +82,49 @@ def send_ack():
     uart.write(frame)
 
 
+# 接收累积缓冲: 跨多次 poll 保留未成帧的残留字节
+_rx_acc = bytearray()
+
+
+def poll_frames():
+    """取走 UART 缓冲区里全部字节, 切出所有 XOR 校验通过的 8 字节帧。
+
+    替代原来的 `data = uart.read(); if len(data) >= 8:` 写法, 它有两个硬伤:
+      1) 一次只读到 3 个字节(半帧)时, 整包被丢弃, 那几个字节再也拿不回来,
+         后续所有字节永久错位;
+      2) 一次读到 16 字节(两帧, STM32 重试时必然发生)时只看前 8 个,
+         第二帧被静默丢掉。
+    现在改为: 累积到 _rx_acc -> 逐帧校验取出 -> 校验失败就滑窗一个字节重试,
+    掉字节后能自动重新对齐, 且不会丢帧。
+    """
+    global _rx_acc
+    n = uart.any()
+    if n:
+        chunk = uart.read(n)
+        if chunk:
+            _rx_acc.extend(chunk)
+
+    frames = []
+    while len(_rx_acc) >= FRAME_LEN:
+        if verify_xor(_rx_acc[:FRAME_LEN]):
+            frames.append(bytes(_rx_acc[:FRAME_LEN]))
+            del _rx_acc[:FRAME_LEN]
+        else:
+            del _rx_acc[:1]          # 滑窗 1 字节, 重新寻找帧边界
+    if len(_rx_acc) > 64:            # 异常噪声下防止无限增长
+        del _rx_acc[:-16]
+    return frames
+
+
+def flush_rx():
+    """清空接收缓冲, 用于阶段切换时丢弃上一阶段的残留/重发帧"""
+    global _rx_acc
+    _rx_acc = bytearray()
+    n = uart.any()
+    if n:
+        uart.read(n)
+
+
 def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
     start = time.ticks_ms()
     while True:
@@ -86,13 +133,12 @@ def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
             Display.show_image(img, x=int((DISPLAY_WIDTH - picture_width) / 2),
                                y=int((DISPLAY_HEIGHT - picture_height) / 2))
             del img
-        data = uart.read()
-        if data and len(data) >= FRAME_LEN:
-            if verify_xor(data[:FRAME_LEN]) and data[0] == expected_cmd:
+        for f in poll_frames():
+            if f[0] == expected_cmd:
                 return True
-            else:
-                print(f"  [WARN] recv: {data[:FRAME_LEN].hex()}, expected 0x{expected_cmd:02X}")
-        if timeout_ms > 0 and time.ticks_ms() - start > timeout_ms:
+            print("  [WARN] discard 0x%02X, waiting 0x%02X" % (f[0], expected_cmd))
+        # ticks_diff 处理计数回绕, 直接相减在 ticks_ms 翻转时会得到负数
+        if timeout_ms > 0 and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
             return False
         time.sleep_ms(10)
 
@@ -150,7 +196,10 @@ class YOLOv11App(AIBase):
 
     def postprocess(self, results):
         det_res = []
+        err_count = 0
         with ScopedTiming("postprocess", self.debug_mode > 0):
+            # 2100 = YOLOv11 在 320x320 输入下的 anchor 数
+            # ((320/8)^2 + (320/16)^2 + (320/32)^2 = 1600+400+100)
             for i in range(2100):
                 try:
                     result = results[0][0][:, i]
@@ -163,8 +212,14 @@ class YOLOv11App(AIBase):
                         cls_idx = list(result[4:]).index(max_score)
                         det_res.append([x, y, w, h, cls_idx, max_score])
                 except Exception as e:
-                    print(f"postprocess i={i} err: {e}")
+                    # 只打印前 3 条: 输出张量形状不对时这里会连打 2100 行,
+                    # 把串口和帧率一起拖垮, 反而看不到真正有用的日志。
+                    err_count += 1
+                    if err_count <= 3:
+                        print(f"postprocess i={i} err: {e}")
                     continue
+            if err_count > 3:
+                print(f"postprocess: {err_count} errors total (suppressed)")
             det_res.sort(key=lambda x: x[-1], reverse=True)
             det_res = self._nms(det_res, self.nms_threshold)
         return det_res
@@ -301,10 +356,13 @@ def close_sensor(sensor):
 
 
 # ======================== 识别辅助函数 ========================
-def recognize_beans(yolo_det, sensor, target_count=3, stable_frames=3):
+def recognize_beans(yolo_det, sensor, target_count=3, stable_frames=3,
+                    timeout_ms=RECOGNIZE_TIMEOUT_MS):
     # 豆子: class indices 5-7 (g, w, y)
     last_result = None
     stable_count = 0
+    best_effort = None          # 最近一次"三颗都识别到"的结果, 超时时兜底用
+    start = time.ticks_ms()
     while True:
         os.exitpoint()
         img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
@@ -321,6 +379,7 @@ def recognize_beans(yolo_det, sensor, target_count=3, stable_frames=3):
         del img_display, img_ai
         gc.collect()
         if 0x00 not in current:
+            best_effort = current
             if current == last_result:
                 stable_count += 1
             else:
@@ -331,13 +390,25 @@ def recognize_beans(yolo_det, sensor, target_count=3, stable_frames=3):
                 return current
         else:
             stable_count = 0
+        if time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+            if best_effort:
+                print("[WARN] bean timeout, use last unstable %s"
+                      % (['0x%02X' % b for b in best_effort],))
+                return best_effort
+            # 一颗都没识别到: 也必须返回合法值。发 0x00 会让 STM32 端
+            # K230.c 拒收整帧 -> bean_flag 不置位 -> 主机重试到超时放弃。
+            print("[WARN] bean timeout with no detection, fallback g/w/y")
+            return [0x06, 0x07, 0x08]
         time.sleep_ms(10)
 
 
-def recognize_front_numbers(yolo_det, sensor, target_count=3, stable_frames=3):
+def recognize_front_numbers(yolo_det, sensor, target_count=3, stable_frames=3,
+                            timeout_ms=RECOGNIZE_TIMEOUT_MS):
     # 数字: class indices 0-4 (1, 2, 3, 4, 5)
     last_result = None
     stable_count = 0
+    best_effort = None
+    start = time.ticks_ms()
     while True:
         os.exitpoint()
         img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
@@ -354,6 +425,7 @@ def recognize_front_numbers(yolo_det, sensor, target_count=3, stable_frames=3):
         del img_display, img_ai
         gc.collect()
         if 0x00 not in current:
+            best_effort = current
             if current == last_result:
                 stable_count += 1
             else:
@@ -364,13 +436,24 @@ def recognize_front_numbers(yolo_det, sensor, target_count=3, stable_frames=3):
                 return current
         else:
             stable_count = 0
+        if time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+            if best_effort:
+                print("[WARN] front number timeout, use last unstable %s"
+                      % (['0x%02X' % b for b in best_effort],))
+                return best_effort
+            # 兜底给三个互异数字, 保证 infer_fifth 还能算出合法的第 5 位
+            print("[WARN] front number timeout with no detection, fallback 1/2/3")
+            return [0x01, 0x02, 0x03]
         time.sleep_ms(10)
 
 
-def recognize_side_number(yolo_det, sensor, stable_frames=3):
+def recognize_side_number(yolo_det, sensor, stable_frames=3,
+                         timeout_ms=RECOGNIZE_TIMEOUT_MS, exclude=None):
     # 数字: class indices 0-4 (1, 2, 3, 4, 5)
     last_result = None
     stable_count = 0
+    best_effort = None
+    start = time.ticks_ms()
     while True:
         os.exitpoint()
         img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
@@ -387,6 +470,7 @@ def recognize_side_number(yolo_det, sensor, stable_frames=3):
         del img_display, img_ai
         gc.collect()
         if current != 0x00:
+            best_effort = current
             if current == last_result:
                 stable_count += 1
             else:
@@ -397,16 +481,50 @@ def recognize_side_number(yolo_det, sensor, stable_frames=3):
                 return current
         else:
             stable_count = 0
+        if time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+            if best_effort:
+                print("[WARN] side number timeout, use last unstable 0x%02X" % best_effort)
+                return best_effort
+            # 兜底挑一个不与正面 3 个数字重复的, 让第 5 位推理仍然唯一
+            fb = 0x04
+            if exclude:
+                cand = [n for n in (0x01, 0x02, 0x03, 0x04, 0x05) if n not in exclude]
+                if cand:
+                    fb = cand[0]
+            print("[WARN] side number timeout with no detection, fallback 0x%02X" % fb)
+            return fb
         time.sleep_ms(10)
 
 
 def infer_fifth(known_nums):
-    all_nums = {0x01, 0x02, 0x03, 0x04, 0x05}
+    """从 {1..5} 里推出第 5 个数字。
+
+    原实现: 已知 4 个数字不互异时返回 0x00。而 STM32 端 K230.c 解析 0x01 帧时
+    要求 byte[2..6] 全部非 0, 一旦出现 0x00 就不置 full_number_flag ->
+    主机 wait_flag 超时 -> 重试 3 次全失败 -> goto idle, 三颗豆子一颗都放不出去。
+    侧面数字与正面某个数字识别成同一个是很容易发生的, 这个分支相当致命。
+
+    现在保证总是返回一个合法数字(1~5):
+      - 正常情况(4 个互异): 返回唯一缺失的那个, 与原逻辑一致;
+      - 有重复: 返回任一尚未被占用的数字(是猜的, 但放错箱子好过整场卡死);
+      - 5 个全被占满: 退回 0x01。
+    返回前会打印告警, 便于赛后从日志判断这一局是否走了降级路径。
+    """
+    all_nums = [0x01, 0x02, 0x03, 0x04, 0x05]
     known_set = set(known_nums) - {0x00}
-    if len(known_set) == 4:
-        missing = all_nums - known_set
-        return missing.pop()
-    return 0x00
+    missing = [n for n in all_nums if n not in known_set]
+
+    if len(known_set) == 4 and len(missing) == 1:
+        return missing[0]
+
+    if missing:
+        print("[WARN] known numbers not distinct %s, guess 5th=0x%02X"
+              % (["0x%02X" % n for n in known_nums], missing[0]))
+        return missing[0]
+
+    print("[WARN] all 5 numbers occupied by %s, fallback 5th=0x01"
+          % (["0x%02X" % n for n in known_nums],))
+    return 0x01
 
 
 # ======================== 主函数 ========================
@@ -453,6 +571,8 @@ if __name__ == "__main__":
         sensor = None
 
         # ============ Phase 2: 等待 STM32 命令 -> 正面数字识别 (Camera 1) ============
+        # 清掉上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
+        flush_rx()
         print("========== Phase 2: Waiting for LOOK_NUMBER (0x03) ==========")
         if not wait_for_cmd(CMD_START_FRONT, timeout_ms=30000):
             print("Phase 2 command timeout!")
@@ -480,6 +600,8 @@ if __name__ == "__main__":
         sensor = None
 
         # ============ Phase 3: 等待 STM32 命令 -> 侧面数字 + 推理 (Camera 0) ============
+        # 清掉上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
+        flush_rx()
         print("========== Phase 3: Waiting for LOOK_SIDE (0x01) ==========")
         if not wait_for_cmd(CMD_START_SIDE, timeout_ms=30000):
             print("Phase 3 command timeout!")
@@ -491,13 +613,28 @@ if __name__ == "__main__":
         sensor.run()
         time.sleep_ms(200)
 
-        side_number = recognize_side_number(yolo_det, sensor)
+        side_number = recognize_side_number(yolo_det, sensor,
+                                            exclude=front_numbers)
         print(f"Side number: 0x{side_number:02X}")
 
         # 推理第5个数字
         known = [side_number] + front_numbers
         fifth = infer_fifth(known)
         full_result = known + [fifth]
+
+        # 最后一道兜底: STM32 端 K230.c 要求 0x01 帧的 5 个字节全部非 0,
+        # 出现 0x00 会导致 full_number_flag 不置位, 主机重试到超时后放弃整局。
+        # 走到这里理论上不该有 0, 但宁可发一个猜的数字也不要发 0。
+        if 0x00 in full_result:
+            print("[WARN] zero in result %s, patching"
+                  % (['0x%02X' % b for b in full_result],))
+            used = set(n for n in full_result if n != 0x00)
+            for i in range(len(full_result)):
+                if full_result[i] == 0x00:
+                    cand = [n for n in (0x01, 0x02, 0x03, 0x04, 0x05) if n not in used]
+                    full_result[i] = cand[0] if cand else 0x01
+                    used.add(full_result[i])
+
         print(f"Full 5 numbers: {['0x%02X' % b for b in full_result]}")
 
         # 发送完整5个数字 [0x01, 0x00, n1, n2, n3, n4, n5, XOR]

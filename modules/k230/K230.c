@@ -53,15 +53,46 @@ __weak void Action_10(void) {}
 
 /* ==================== 内部函数 ==================== */
 
+/* 接收统计(诊断用): 可在调试器里看是否有帧在丢 */
+__IO uint32_t k230_rx_frames  = 0;   /* 成功解析的整帧数 */
+__IO uint32_t k230_rx_badxor  = 0;   /* XOR 校验失败帧数 */
+__IO uint32_t k230_rx_badlen  = 0;   /* 长度不等于 8 的残帧数 */
+__IO uint32_t k230_rx_rearm_err = 0; /* 重新武装 DMA 失败次数 */
+
 /**
-  * @brief  USART3 DMA 接收完成回调 (中断上下文)
-  *         解析 K230 发来的 8 字节数据帧, 重新启动 DMA 接收下一帧
-  * @note   通过 UART_Callback_Register 注册, 由 bsp/uart/uart_callback.c
-  *         的 HAL_UART_RxCpltCallback 分发调用, 不直接覆写弱函数
+  * @brief  武装 USART3 的 IDLE 空闲切帧 DMA 接收
+  * @note   用 ReceiveToIdle 而非定长 Receive_DMA: 定长模式下一旦丢/多一个字节,
+  *         DMA 组帧相位就永久错位, XOR 永远失败且无法自愈; IDLE 模式靠帧间
+  *         空隙(K230 每帧之间必有间隔)重新对齐, 掉字节后下一帧即恢复。
+  *         返回值必须检查——失败而不重试会导致 K230 通讯永久中断。
   */
-void k230_read(UART_HandleTypeDef *huart)
+static void k230_arm_rx(UART_HandleTypeDef *huart)
 {
-    (void)huart;
+    if (HAL_UARTEx_ReceiveToIdle_DMA(huart, K230_Rx, K230_RX_BUF_SIZE) != HAL_OK)
+    {
+        k230_rx_rearm_err++;
+        return;
+    }
+    /* 关半满中断: 只关心 IDLE/收满事件, 否则 4 字节就会上报一次残帧 */
+    __HAL_DMA_DISABLE_IT(huart->hdmarx, DMA_IT_HT);
+}
+
+/**
+  * @brief  USART3 接收事件回调 (中断上下文): 解析 K230 数据帧
+  * @param  huart  USART3 句柄
+  * @param  size   本次实际收到的字节数 (IDLE 切帧上报)
+  * @note   通过 UART_Callback_RegisterEvent 注册, 由 bsp/uart/uart_callback.c
+  *         的 HAL_UARTEx_RxEventCallback 分发, 不直接覆写弱函数。
+  */
+void k230_read(UART_HandleTypeDef *huart, uint16_t size)
+{
+    /* 残帧(丢字节/对端半途复位): 丢弃并重新武装, 下一帧靠 IDLE 自动对齐 */
+    if (size != K230_RX_BUF_SIZE)
+    {
+        k230_rx_badlen++;
+        k230_arm_rx(huart);
+        return;
+    }
 
     /* XOR 校验: byte[7] 应等于 byte[0]^...^byte[6], 不匹配则丢弃 */
     uint8_t cs = 0;
@@ -69,9 +100,12 @@ void k230_read(UART_HandleTypeDef *huart)
         cs ^= K230_Rx[i];
     if (cs != K230_Rx[K230_RX_BUF_SIZE - 1])
     {
-        HAL_UART_Receive_DMA(&huart3, K230_Rx, K230_RX_BUF_SIZE);
+        k230_rx_badxor++;
+        k230_arm_rx(huart);
         return;
     }
+
+    k230_rx_frames++;
 
     if (K230_Rx[0] == 0x02)
     {
@@ -108,11 +142,14 @@ void k230_read(UART_HandleTypeDef *huart)
     }
     else if (K230_Rx[0] == 0x0A)
     {
-        k230_ack_flag = 1;
+        /* ACK 计数而非置 1: Phase2 中 K230 会连发两个 0x0A(命令收到/识别完成),
+         * 若两帧间隔短于任务轮询周期, 用布尔标志会丢掉第二个, 导致主机白等超时。 */
+        if (k230_ack_flag < 255)
+            k230_ack_flag++;
     }
 
-    /* 重新启动 DMA 接收 (DMA_NORMAL 模式, 每收满 8 字节触发一次回调) */
-    HAL_UART_Receive_DMA(&huart3, K230_Rx, K230_RX_BUF_SIZE);
+    /* 重新武装接收, 等待下一帧 */
+    k230_arm_rx(huart);
 }
 
 
@@ -125,8 +162,9 @@ void k230_read(UART_HandleTypeDef *huart)
 void K230_Init(void)
 {
     __HAL_UART_CLEAR_OREFLAG(&huart3);
-    UART_Callback_Register(USART3, k230_read);
-    HAL_UART_Receive_DMA(&huart3, K230_Rx, K230_RX_BUF_SIZE);
+    UART_Callback_RegisterEvent(USART3, k230_read);
+    UART_Callback_RegisterRestart(USART3, k230_arm_rx);  /* ORE/FE 后自动恢复 */
+    k230_arm_rx(&huart3);
 }
 
 /**
@@ -134,7 +172,7 @@ void K230_Init(void)
   * @param  command  命令码: K230_CMD_LOOK_BEAN/NUMBER/SIDE/CLOSE
   *         2=看豆, 3=看正面数字, 1=看侧面数字, 6=关闭 (与K230端匹配)
   */
-void k230_write(uint8_t command)
+int k230_write(uint8_t command)
 {
     Command_Data[0] = command;
     Command_Data[1] = (command == K230_CMD_CLOSE) ? 0 : 1;
@@ -147,7 +185,9 @@ void k230_write(uint8_t command)
         cs ^= Command_Data[i];
     Command_Data[K230_RX_BUF_SIZE - 1] = cs;
 
-    HAL_UART_Transmit(&huart3, Command_Data, K230_RX_BUF_SIZE, 100);
+    /* 返回值必须检查: 发送失败(总线忙/上一次 DMA 未完成)时静默丢命令,
+     * K230 收不到就永远不会应答, 表现为"莫名超时", 极难定位。 */
+    return (HAL_UART_Transmit(&huart3, Command_Data, K230_RX_BUF_SIZE, 100) == HAL_OK) ? 0 : -1;
 }
 
 
@@ -174,7 +214,7 @@ void k230_write(uint8_t command)
   * @param  key  目标豆子颜色: BEAN_GREEN(0x06)/BEAN_YUN(0x07)/BEAN_YELLOW(0x08)
   * @note   颜色->目标值映射: 绿=2, 芸=3, 黄=1 (与 K230 返回的 number_position 编码一致)
   */
-void Data_Handle1(uint8_t key)
+int Data_Handle1(uint8_t key)
 {
     uint8_t target = 0;
     uint8_t pos = 0;
@@ -184,7 +224,7 @@ void Data_Handle1(uint8_t key)
     if      (key == BEAN_GREEN)  target = 2;   /* 0x06 绿豆 */
     else if (key == BEAN_YUN)    target = 3;   /* 0x07 芸豆 */
     else if (key == BEAN_YELLOW) target = 1;   /* 0x08 黄豆 */
-    else                 return;
+    else                 return -1;            /* 未知颜色 */
 
     /* 2、遍历 number_position, 查询目标值所在位置(1~5) */
     for (i = 0; i < 5; i++)
@@ -196,7 +236,9 @@ void Data_Handle1(uint8_t key)
         }
     }
 
-    /* 3、五位位置 switch, 调对应动作组 */
+    /* 3、五位位置 switch, 调对应动作组。
+     * pos==0 表示 number_position 里没有该数字(K230 识别错/推理失败),
+     * 必须把失败回报给调用方, 否则这颗豆子会被静默丢弃且毫无提示。 */
     switch (pos)
     {
         case 1: Action_1(); break;
@@ -204,7 +246,8 @@ void Data_Handle1(uint8_t key)
         case 3: Action_3(); break;
         case 4: Action_4(); break;
         case 5: Action_5(); break;
-        default: break;
+        default: return -2;                    /* 目标数字不在 number_position 中 */
     }
+    return pos;
 }
 
