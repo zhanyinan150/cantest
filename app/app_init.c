@@ -92,11 +92,9 @@ void App_Init(void)
 #endif
 
   /* 上电自动动作任务:
-   * 当前启用 MotorAutoTask(下方), Action_Init 已注释停用。
-   * 两者都调 Motor_XYZ, 不可同时运行。
-   * 切回 Action_Init 时: 取消下方注释, 注释掉 MotorAutoTask 即可。 */
-  // Action_Init();
-#if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+   * 当前启用 Action_Init(K230通讯+动作), MotorAutoTask 已停用。 */
+  Action_Init();
+#if 0  /* MotorAutoTask: 上电自动调 Motor_XYZ (已停用) */
   const osThreadAttr_t motorAutoTask_attributes = {
     .name = "MotorAutoTask",
     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
