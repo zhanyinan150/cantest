@@ -464,11 +464,11 @@ if __name__ == "__main__":
         time.sleep_ms(200)
 
         front_numbers = recognize_front_numbers(yolo_det, sensor)
-        print(f"Front numbers: {['0x%02X' % b for b in front_numbers]}")
+        print(f"Front numbers stored: {['0x%02X' % b for b in front_numbers]}")
 
-        # 发送正面数字 [0x03, 0x00, n1, n2, n3, 0x00, 0x00, XOR]
-        send_frame(CMD_START_FRONT, front_numbers)
-        print("Front number data sent")
+        # 识别完成, 发送 ACK 通知 STM32 (不发数据帧, 正面数字仅 K230 内部使用)
+        send_ack()
+        print("Front number done, ACK sent")
 
         # 等待 STM32 应答
         if not wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor, timeout_ms=10000):

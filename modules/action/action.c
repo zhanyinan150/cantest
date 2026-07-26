@@ -119,16 +119,15 @@ static void action_1(void *argument)
         dbg("[P2] ACK TIMEOUT!\r\n");
         goto idle;
     }
-    dbg("[P2] ACK received, wait front data...\r\n");
+    dbg("[P2] ACK received, wait recognition done...\r\n");
 
-    if (wait_flag(&front_number_flag, K230_DATA_TIMEOUT_MS) != 0)
+    /* 等 K230 识别完成后的第二个 ACK (不发数据帧, 正面数字仅 K230 内部使用) */
+    if (wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) != 0)
     {
-        dbg("[P2] DATA TIMEOUT!\r\n");
+        dbg("[P2] RECOGNITION TIMEOUT!\r\n");
         goto idle;
     }
-    snprintf(buf, sizeof(buf), "[P2] Front: %02X %02X %02X\r\n",
-             front_number[0], front_number[1], front_number[2]);
-    dbg(buf);
+    dbg("[P2] Recognition done\r\n");
     k230_write(K230_CMD_CLOSE);
     dbg("[P2] ACK sent\r\n");
 
