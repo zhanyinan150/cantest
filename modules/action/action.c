@@ -23,6 +23,7 @@
 #define ACTION_STARTUP_DELAY     1000
 #define K230_ACK_TIMEOUT_MS      3000
 #define K230_DATA_TIMEOUT_MS     15000
+#define K230_RETRY_MAX           3
 
 static void action_1(void *argument);
 
@@ -55,11 +56,32 @@ static int wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
     return 0;
 }
 
+/* 发命令 + 等 K230 ACK, 超时重试最多 K230_RETRY_MAX 次 */
 static int send_cmd_and_wait_ack(uint8_t cmd)
 {
-    k230_ack_flag = 0;
-    k230_write(cmd);
-    return wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS);
+    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
+    {
+        k230_ack_flag = 0;
+        k230_write(cmd);
+        if (wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS) == 0)
+            return 0;
+        dbg("[RTY] retry...\r\n");
+    }
+    return -1;
+}
+
+/* 发命令 + 等 ACK + 等数据, 任一步超时则重发命令, 最多 K230_RETRY_MAX 次 */
+static int send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
+{
+    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
+    {
+        if (send_cmd_and_wait_ack(cmd) != 0)
+            continue;
+        if (wait_flag(data_flag, K230_DATA_TIMEOUT_MS) == 0)
+            return 0;
+        dbg("[RTY] data timeout, resend cmd...\r\n");
+    }
+    return -1;
 }
 
 static void action_1(void *argument)
@@ -72,16 +94,9 @@ static void action_1(void *argument)
 
     /* ======== Phase 1: 豆子识别 ======== */
     dbg("[P1] Send LOOK_BEAN\r\n");
-    if (send_cmd_and_wait_ack(K230_CMD_LOOK_BEAN) != 0)
+    if (send_cmd_wait_ack_wait_data(K230_CMD_LOOK_BEAN, &bean_flag) != 0)
     {
-        dbg("[P1] ACK TIMEOUT!\r\n");
-        goto idle;
-    }
-    dbg("[P1] ACK received, wait bean data...\r\n");
-
-    if (wait_flag(&bean_flag, K230_DATA_TIMEOUT_MS) != 0)
-    {
-        dbg("[P1] DATA TIMEOUT!\r\n");
+        dbg("[P1] FAILED after retries!\r\n");
         goto idle;
     }
     snprintf(buf, sizeof(buf), "[P1] Bean: %02X %02X %02X\r\n",
@@ -102,15 +117,30 @@ static void action_1(void *argument)
     dbg("[P2] Send LOOK_NUMBER\r\n");
     if (send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER) != 0)
     {
-        dbg("[P2] ACK TIMEOUT!\r\n");
+        dbg("[P2] FAILED after retries!\r\n");
         goto idle;
     }
     dbg("[P2] ACK received, wait recognition done...\r\n");
 
-    if (wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) != 0)
+    /* Phase 2: K230 识别完发 ACK, 不发数据帧 */
     {
-        dbg("[P2] RECOGNITION TIMEOUT!\r\n");
-        goto idle;
+        int p2_ok = 0;
+        for (int retry = 0; retry < K230_RETRY_MAX; retry++)
+        {
+            k230_ack_flag = 0;
+            if (wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) == 0)
+            {
+                p2_ok = 1;
+                break;
+            }
+            dbg("[P2] recognition timeout, resend LOOK_NUMBER\r\n");
+            send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER);
+        }
+        if (!p2_ok)
+        {
+            dbg("[P2] FAILED after retries!\r\n");
+            goto idle;
+        }
     }
     dbg("[P2] Recognition done\r\n");
     k230_write(K230_CMD_CLOSE);
@@ -122,16 +152,9 @@ static void action_1(void *argument)
     osDelay(1000);
 
     dbg("[P3] Send LOOK_SIDE\r\n");
-    if (send_cmd_and_wait_ack(K230_CMD_LOOK_SIDE) != 0)
+    if (send_cmd_wait_ack_wait_data(K230_CMD_LOOK_SIDE, &full_number_flag) != 0)
     {
-        dbg("[P3] ACK TIMEOUT!\r\n");
-        goto idle;
-    }
-    dbg("[P3] ACK received, wait full data...\r\n");
-
-    if (wait_flag(&full_number_flag, K230_DATA_TIMEOUT_MS) != 0)
-    {
-        dbg("[P3] DATA TIMEOUT!\r\n");
+        dbg("[P3] FAILED after retries!\r\n");
         goto idle;
     }
     snprintf(buf, sizeof(buf), "[P3] Numbers: %02X %02X %02X %02X %02X\r\n",
