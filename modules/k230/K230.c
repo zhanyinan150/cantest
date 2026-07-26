@@ -35,6 +35,7 @@ __IO uint8_t front_number[3]      = {0};      /* 正面3个数字 */
 __IO uint8_t front_number_flag    = 0;        /* 正面数字就绪标志 */
 __IO uint8_t full_number_flag     = 0;        /* 完整5数字就绪标志 */
 __IO uint8_t count       = 0;                 /* 数字数据帧计数 */
+__IO uint8_t k230_ack_flag = 0;               /* K230 ACK (0x0A) 就绪标志 */
 
 /* ==================== 动作组弱定义桩 ==================== */
 /* 用户在 action.c 中以同名强定义覆写, 链接器自动替换弱定义。
@@ -104,6 +105,10 @@ void k230_read(UART_HandleTypeDef *huart)
                 number_position[i] = K230_Rx[i + 2];
             full_number_flag = 1;
         }
+    }
+    else if (K230_Rx[0] == 0x0A)
+    {
+        k230_ack_flag = 1;
     }
 
     /* 重新启动 DMA 接收 (DMA_NORMAL 模式, 每收满 8 字节触发一次回调) */

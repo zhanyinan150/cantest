@@ -65,6 +65,8 @@ extern __IO uint8_t front_number_flag;
 extern __IO uint8_t full_number_flag;
 /* 数字数据帧计数(每收到一帧非全零 number_position 自增) */
 extern __IO uint8_t count;
+/* K230 ACK (0x0A) 就绪标志(1=收到K230应答), 消费后清零 */
+extern __IO uint8_t k230_ack_flag;
 
 /* ---- K230 触发的动作组 (在 action.c 中实现, 此处仅声明) ----
  * Data_Handle1 根据 key(豆子颜色) 查 number_position 得位置 1~5, 调 Action_1..5
