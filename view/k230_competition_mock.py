@@ -57,13 +57,12 @@ def send_ack():
 def wait_for_cmd(expected_cmd, timeout_ms=30000):
     start = time.ticks_ms()
     while True:
-        if uart.any() >= FRAME_LEN:
-            data = uart.read(FRAME_LEN)
-            if data and len(data) == FRAME_LEN and verify_xor(data):
-                if data[0] == expected_cmd:
-                    return True
-                else:
-                    print(f"  [WARN] recv cmd 0x{data[0]:02X}, expected 0x{expected_cmd:02X}")
+        data = uart.read()
+        if data and len(data) >= FRAME_LEN:
+            if verify_xor(data[:FRAME_LEN]) and data[0] == expected_cmd:
+                return True
+            else:
+                print(f"  [WARN] recv: {data[:FRAME_LEN].hex()}, expected 0x{expected_cmd:02X}")
         if timeout_ms > 0 and time.ticks_ms() - start > timeout_ms:
             return False
         time.sleep_ms(10)
@@ -88,8 +87,11 @@ def mock_recognize_front_numbers():
     print("  [MOCK] >>> open camera 1, YOLO inference, anti-shake 3 frames <<<")
     time.sleep_ms(500)
     nums = NUM_CODES[:]
-    urandom.shuffle(nums)
-    result = nums[:3]
+    result = []
+    for _ in range(3):
+        n = urandom.choice(nums)
+        nums.remove(n)
+        result.append(n)
     print(f"  [MOCK] Front numbers: {['0x%02X' % b for b in result]}")
     return result
 

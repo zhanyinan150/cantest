@@ -86,11 +86,12 @@ def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
             Display.show_image(img, x=int((DISPLAY_WIDTH - picture_width) / 2),
                                y=int((DISPLAY_HEIGHT - picture_height) / 2))
             del img
-        if uart.any() >= FRAME_LEN:
-            data = uart.read(FRAME_LEN)
-            if data and len(data) == FRAME_LEN and verify_xor(data):
-                if data[0] == expected_cmd:
-                    return True
+        data = uart.read()
+        if data and len(data) >= FRAME_LEN:
+            if verify_xor(data[:FRAME_LEN]) and data[0] == expected_cmd:
+                return True
+            else:
+                print(f"  [WARN] recv: {data[:FRAME_LEN].hex()}, expected 0x{expected_cmd:02X}")
         if timeout_ms > 0 and time.ticks_ms() - start > timeout_ms:
             return False
         time.sleep_ms(10)

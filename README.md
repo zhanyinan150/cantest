@@ -10,7 +10,7 @@
 | Y 轴(前后) | Emm_V5 步进闭环 ×2 同步 | CAN2 扩展帧 | ID=1, 2 |
 | Z 轴(升降) | 大疆 M2006 (C610 电调) | CAN1 标准帧 | 0x201 |
 | 舵机 | LobotServoController | UART | - |
-| 视觉 | K230 | USB CDC | GPIO53 按键 |
+| 视觉 | K230 | USART3 (PB10/PB11) | UART3 (pin50/51) |
 | 日志 | - | USART1 DMA (PA9) | - |
 
 - 主控:STM32F407VG,168 MHz,FreeRTOS + Keil MDK-ARM
@@ -117,11 +117,25 @@ USART1 DMA 队列驱动,避免多任务并发抢 USART1 致 HardFault:
 
 ## K230 视觉
 
-`view/` 目录 Python 脚本(K230 CanMV):
+`view/` 目录 Python 脚本(K230 CanMV), 通讯走 UART3 (pin50/51) <-> STM32 USART3 (PB10/PB11), 115200 8N1, 8字节定长帧 + XOR 校验。
 
-- `k230_10s_switch.py` — YOLO 检测 + 10s 自动切摄像头 + GPIO53 按键(短按连拍 10 张,长按切摄像头)
-- `k230_1photo_switch.py` — 单摄像头按键拍照 + 切换
-- `k230_photo_capture.py` — 批量拍照(数据集采集)
+### 通讯协议 (STM32 主机 / K230 从机)
+
+| 阶段 | STM32 | K230 |
+|------|-------|------|
+| P1 豆子 | 发 LOOK_BEAN(0x02) -> 等ACK(0x0A) -> 等豆子数据 -> 发ACK(0x06) | 等命令 -> ACK -> 识别(cam2) -> 发豆子帧(0x02) -> 等ACK |
+| P2 正面数字 | 发 LOOK_NUMBER(0x03) -> 等ACK(0x0A) -> 等识别完成ACK(0x0A) -> 发ACK(0x06) | 等命令 -> ACK -> 识别(cam1) -> 发ACK(0x0A,不发数据) -> 等ACK |
+| P3 侧面数字 | 发 LOOK_SIDE(0x01) -> 等ACK(0x0A) -> 等完整5数字 -> 发ACK(0x06) | 等命令 -> ACK -> 识别(cam0) -> 推理第5数字 -> 发完整帧(0x01) -> 等ACK |
+
+### 脚本列表
+
+- `k230_competition.py` - 比赛主程序: 真实摄像头+YOLO+三阶段协议+防抖+推理第5数字
+- `k230_competition_mock.py` - 通讯协议测试(假数据,无摄像头)
+- `k230_comm_test.py` - ACK握手通讯测试(旧协议,K230主动发)
+- `k230_10s_switch.py` - YOLO 检测 + 10s 自动切摄像头 + GPIO53 按键
+- `k230_1photo_switch.py` - 单摄像头按键拍照 + 切换
+- `k230_photo_capture.py` - 批量拍照(数据集采集)
+- `k230_uart_test.py` - 纯UART收发测试
 
 按键硬件:GPIO53 下拉 + 高电平有效(按下=1),`PULL_DOWN`。
 
