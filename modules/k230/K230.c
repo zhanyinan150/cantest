@@ -10,16 +10,16 @@
   *     以同名强定义覆写即可, 无需改 K230.c
   *
   * 依赖前提(须在 App_Init 中先完成):
-  *   1. MX_USART2_UART_Init() 已由 CubeMX 生成调用 (main.c)
+  *   1. MX_USART3_UART_Init() 已由 CubeMX 生成调用 (main.c)
   *   2. UART_Callback_Init() 已调用 (注册 USART1 + 创建命令队列)
-  *   3. K230_Init() 注册 USART2 回调并启动 DMA 接收
+  *   3. K230_Init() 注册 USART3 回调并启动 DMA 接收
   *
   * 通信协议详见 K230.h 文件头注释。
   ******************************************************************************
   */
 
 #include "K230.h"
-#include "usart.h"           /* huart2 */
+#include "usart.h"           /* huart3 */
 #include "uart_callback.h"   /* UART_Callback_Register */
 
 /* ==================== 模块变量 ==================== */
@@ -54,7 +54,7 @@ __weak void Action_10(void) {}
 /* ==================== 内部函数 ==================== */
 
 /**
-  * @brief  USART2 DMA 接收完成回调 (中断上下文)
+  * @brief  USART3 DMA 接收完成回调 (中断上下文)
   *         解析 K230 发来的 8 字节数据帧, 重新启动 DMA 接收下一帧
   * @note   通过 UART_Callback_Register 注册, 由 bsp/uart/uart_callback.c
   *         的 HAL_UART_RxCpltCallback 分发调用, 不直接覆写弱函数
@@ -69,7 +69,7 @@ void k230_read(UART_HandleTypeDef *huart)
         cs ^= K230_Rx[i];
     if (cs != K230_Rx[K230_RX_BUF_SIZE - 1])
     {
-        HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
+        HAL_UART_Receive_DMA(&huart3, K230_Rx, K230_RX_BUF_SIZE);
         return;
     }
 
@@ -112,21 +112,21 @@ void k230_read(UART_HandleTypeDef *huart)
     }
 
     /* 重新启动 DMA 接收 (DMA_NORMAL 模式, 每收满 8 字节触发一次回调) */
-    HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
+    HAL_UART_Receive_DMA(&huart3, K230_Rx, K230_RX_BUF_SIZE);
 }
 
 
 /* ==================== 公开接口 ==================== */
 
 /**
-  * @brief  初始化 K230 模块: 注册 USART2 回调 + 启动 DMA 接收
+  * @brief  初始化 K230 模块: 注册 USART3 回调 + 启动 DMA 接收
   * @note   在 App_Init 中 UART_Callback_Init 之后调用
   */
 void K230_Init(void)
 {
-    __HAL_UART_CLEAR_OREFLAG(&huart2);
-    UART_Callback_Register(USART2, k230_read);
-    HAL_UART_Receive_DMA(&huart2, K230_Rx, K230_RX_BUF_SIZE);
+    __HAL_UART_CLEAR_OREFLAG(&huart3);
+    UART_Callback_Register(USART3, k230_read);
+    HAL_UART_Receive_DMA(&huart3, K230_Rx, K230_RX_BUF_SIZE);
 }
 
 /**
@@ -147,7 +147,7 @@ void k230_write(uint8_t command)
         cs ^= Command_Data[i];
     Command_Data[K230_RX_BUF_SIZE - 1] = cs;
 
-    HAL_UART_Transmit(&huart2, Command_Data, K230_RX_BUF_SIZE, 100);
+    HAL_UART_Transmit(&huart3, Command_Data, K230_RX_BUF_SIZE, 100);
 }
 
 

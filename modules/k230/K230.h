@@ -5,7 +5,7 @@
   ******************************************************************************
   * 移植自参考工程 crane_1 的 K230.h, 适配本工程 BSP 分层。
   *
-  * 通信: USART2 (PA2 TX / PA3 RX), 115200 8N1, DMA 收发
+  * 通信: USART3 (PB10 TX / PB11 RX), 115200 8N1, DMA 收发
   *   发送: k230_write(command) 发 8 字节
   *     [0]=command, [1]=1(关闭时=0), [2..7]=0
   *   接收: K230 发 8 字节, [0]=帧类型:
@@ -86,15 +86,15 @@ extern void Action_10(void);
 /* ---- 公开接口 ---- */
 
 /**
-  * @brief  初始化 K230 模块: 注册 USART2 接收回调 + 启动 DMA 接收
+  * @brief  初始化 K230 模块: 注册 USART3 接收回调 + 启动 DMA 接收
   * @note   在 App_Init 中调用 (UART_Callback_Init 之后)
   */
 void K230_Init(void);
 
 /**
-  * @brief  USART2 DMA 接收完成回调: 解析 K230 数据帧 + 重启 DMA 接收
+  * @brief  USART3 DMA 接收完成回调: 解析 K230 数据帧 + 重启 DMA 接收
   * @note   由 UART_Callback_Register 注册, DMA 收满 8 字节后中断上下文调用;
-  *         也可在外部手动调用以重新解析当前缓冲 (需传入 &huart2)
+  *         也可在外部手动调用以重新解析当前缓冲 (需传入 &huart3)
   */
 void k230_read(UART_HandleTypeDef *huart);
 

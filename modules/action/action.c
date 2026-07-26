@@ -1,13 +1,10 @@
 /**
   ******************************************************************************
   * @file    action.c
-  * @brief   K230 比赛通讯(主机) + 电机动作序列 (STM32端)
+  * @brief   K230 比赛通讯(主机) + 动作序列 (STM32端)
   ******************************************************************************
   * STM32 为通讯主机, 每个阶段: 发命令 -> 等K230 ACK -> 等数据 -> 发ACK
-  *
-  *   P1: 发 LOOK_BEAN -> 等 ACK -> 等豆子数据 -> 发 ACK -> 抓豆子
-  *   P2: 发 LOOK_NUMBER -> 等 ACK -> 等正面数字 -> 发 ACK
-  *   P3: 发 LOOK_SIDE -> 等 ACK -> 等完整5数字 -> 发 ACK -> 放豆子
+  * 电机动作用文字占位, 后续替换为实际 Motor_XYZ 调用
   ******************************************************************************
   */
 
@@ -16,7 +13,6 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "cmsis_os.h"
-#include "motor.h"
 #include "K230.h"
 #include "usart.h"
 #include <string.h>
@@ -29,7 +25,6 @@
 #define K230_DATA_TIMEOUT_MS     15000
 
 static void action_1(void *argument);
-static void action_douzi_first(void);
 
 void Action_Init(void)
 {
@@ -60,15 +55,12 @@ static int wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
     return 0;
 }
 
-/* 发命令 + 等 K230 ACK, ACK 超时返回 -1 */
 static int send_cmd_and_wait_ack(uint8_t cmd)
 {
     k230_ack_flag = 0;
     k230_write(cmd);
     return wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS);
 }
-
-//备注一下后面的左边指有电池那边，右边指没电池那边
 
 static void action_1(void *argument)
 {
@@ -78,7 +70,7 @@ static void action_1(void *argument)
     char buf[80];
     dbg("\r\n=== K230 Competition (Master) ===\r\n");
 
-    /* ---- P1: 发命令看豆子 -> 等 ACK -> 等数据 -> 发 ACK ---- */
+    /* ======== Phase 1: 豆子识别 ======== */
     dbg("[P1] Send LOOK_BEAN\r\n");
     if (send_cmd_and_wait_ack(K230_CMD_LOOK_BEAN) != 0)
     {
@@ -98,20 +90,14 @@ static void action_1(void *argument)
     k230_write(K230_CMD_CLOSE);
     dbg("[P1] ACK sent\r\n");
 
-    /* ---- 抓豆子 ---- */
-    dbg("[ACT] Grabbing beans...\r\n");
-    action_douzi_first();
+    /* ---- Motor: grab beans ---- */
+    dbg("[ACT] >>> Motor: grab beans (start->left->middle->ready) <<<\r\n");
+    osDelay(1000);
 
-    /* ---- P2: 障碍物移动 -> 发命令看正面数字 ---- */
-    dbg("[P2] Moving to front number position...\r\n");
-    (void)Motor_XYZ(0, 300, 20, 0,
-                    0, 100, 20, 100.0f,
-                    0, 0.0f);
-    osDelay(6000);
-    (void)Motor_XYZ(1, 300, 20, 65.0f,
-                    0, 50, 20, 160.0f,
-                    0, 0.0f);
-    osDelay(6000);
+    /* ======== Phase 2: front number ======== */
+    /* ---- Motor: obstacle avoidance ---- */
+    dbg("[ACT] >>> Motor: obstacle avoidance <<<\r\n");
+    osDelay(1000);
 
     dbg("[P2] Send LOOK_NUMBER\r\n");
     if (send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER) != 0)
@@ -121,7 +107,6 @@ static void action_1(void *argument)
     }
     dbg("[P2] ACK received, wait recognition done...\r\n");
 
-    /* 等 K230 识别完成后的第二个 ACK (不发数据帧, 正面数字仅 K230 内部使用) */
     if (wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) != 0)
     {
         dbg("[P2] RECOGNITION TIMEOUT!\r\n");
@@ -131,11 +116,10 @@ static void action_1(void *argument)
     k230_write(K230_CMD_CLOSE);
     dbg("[P2] ACK sent\r\n");
 
-    /* ---- P3: 到箱子 -> 发命令看侧面数字 ---- */
-    (void)Motor_XYZ(1, 300, 20, 0,
-                    0, 100, 20, 55.0f,
-                    0, 0.0f);
-    osDelay(8000);
+    /* ======== Phase 3: side number + inference ======== */
+    /* ---- Motor: move to box ---- */
+    dbg("[ACT] >>> Motor: move to box <<<\r\n");
+    osDelay(1000);
 
     dbg("[P3] Send LOOK_SIDE\r\n");
     if (send_cmd_and_wait_ack(K230_CMD_LOOK_SIDE) != 0)
@@ -159,10 +143,21 @@ static void action_1(void *argument)
 
     bean_locked = 0;
 
-    /* ---- 放豆子 ---- */
-    dbg("[ACT] Placing beans...\r\n");
+    /* ---- place beans ---- */
+    dbg("[ACT] >>> Place beans: <<<\r\n");
+    snprintf(buf, sizeof(buf), "[ACT] 豆子1: %02X -> 位置%d\r\n",
+             bean_color[0], 0);
+    dbg(buf);
     Data_Handle1(bean_color[0]);
+
+    snprintf(buf, sizeof(buf), "[ACT] 豆子2: %02X -> 位置%d\r\n",
+             bean_color[1], 0);
+    dbg(buf);
     Data_Handle1(bean_color[1]);
+
+    snprintf(buf, sizeof(buf), "[ACT] 豆子3: %02X -> 位置%d\r\n",
+             bean_color[2], 0);
+    dbg(buf);
     Data_Handle1(bean_color[2]);
     dbg("[ACT] Done\r\n");
 
@@ -170,22 +165,4 @@ idle:
     dbg("=== All phases complete ===\r\n");
     for (;;)
         osDelay(1000);
-}
-
-static void action_douzi_first(void)
-{
-    (void)Motor_XYZ(1, 300, 30, 44.0f,
-                    1, 100, 20, 185.0f,
-                    0, 35.0f);
-    osDelay(6000);
-
-    (void)Motor_XYZ(0, 300, 20, 20.5f,
-                    1, 100, 20, 0,
-                    0, 0.0f);
-    osDelay(4000);
-
-    (void)Motor_XYZ(0, 300, 20, 60.0f,
-                    1, 100, 20, 0,
-                    0, 0.0f);
-    osDelay(9000);
 }

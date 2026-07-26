@@ -25,7 +25,7 @@
 #include "motor.h"       /* Motor_Init / Motor_XYZ / mxyz 命令 (XYZ起重机机构) */
 #include "action.h"      /* Action_Init: action_1 动作序列任务 */
 #include "servo.h"       /* runActionGroup: 舵机动作组播放 */
-#include "K230.h"        /* K230_Init: 视觉模块 USART2 通信 */
+#include "K230.h"        /* K230_Init: 视觉模块 USART3 通信 */
 #include "uart_callback.h"
 #include "cmd_register.h"
 #include "telemetry.h"
@@ -112,9 +112,9 @@ void App_Init(void)
    * 当前 UART5 测试只发送不接收, 不再注册 UART5 回调。 */
   UART_Callback_Init();
 
-  /* K230 视觉模块: 注册 USART2 接收回调 + 启动 DMA 接收。
+  /* K230 视觉模块: 注册 USART3 接收回调 + 启动 DMA 接收。
    * 须在 UART_Callback_Init 之后(回调分发系统已就绪)。
-   * USART2 (PA2 TX / PA3 RX) 专供 K230, 不与其他模块冲突。
+   * USART3 (PA2 TX / PA3 RX) 专供 K230, 不与其他模块冲突。
    * K230 触发的动作组 Action_1..Action_10 在 action.c 中实现(弱定义桩在 K230.c)。 */
   K230_Init();
 }
