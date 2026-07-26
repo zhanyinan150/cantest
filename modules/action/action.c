@@ -18,6 +18,7 @@
 #include "cmsis_os.h"
 #include "motor.h"       /* Motor_XYZ */
 #include "K230.h"        /* k230_write, k230_read */
+#include "usart.h"       /* huart2 */
 
 /* ---- 任务参数 ---- */
 #define ACTION_TASK_STACK_SIZE   1024               /* 堆栈(word) */
@@ -38,15 +39,15 @@ static void action_xiangzi_first(void);
 /**
   * @brief  初始化动作序列: 创建 action_1 任务
   */
-void Action_Init(void)
-{
-    const osThreadAttr_t attr = {
-        .name = "ActionTask",
-        .stack_size = ACTION_TASK_STACK_SIZE * 4,
-        .priority = (osPriority_t)ACTION_TASK_PRIORITY,
-    };
-    osThreadNew(action_1, NULL, &attr);
-}
+// void Action_Init(void)
+// {
+//     const osThreadAttr_t attr = {
+//         .name = "ActionTask",
+//         .stack_size = ACTION_TASK_STACK_SIZE * 4,
+//         .priority = (osPriority_t)ACTION_TASK_PRIORITY,
+//     };
+//     osThreadNew(action_1, NULL, &attr);
+// }
 
 /**
  * @brief  上电自动动作任务: 依次跑抓豆子 + 放箱子序列, 完成后挂起
@@ -73,7 +74,7 @@ static void action_1(void *argument)
 
     action_douzi_first();   /* 抓豆子 ，动作截止到抓完豆子已经完成升降结构移到右边*/
 
-    // 数字识别我放在action_xiangzi_first里面了
+    //数字识别我放在action_xiangzi_first里面了
     action_xiangzi_first(); /* 放箱子 */
 
     for (;;)
@@ -99,7 +100,7 @@ static void action_douzi_first(void)
 {
     /* 起始点到抓左边豆子 */
     (void)Motor_XYZ(1, 300, 30, 44.0f,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
-                    1, 100, 20, 185,    /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                    1, 100, 20, 185.0f,    /* Y: dir=1(前), 100rpm, acc=20, 185cm */
                     0, 35.0f);           /* Z: dir=0(上), 35cm */
     osDelay(6000);
 
@@ -143,7 +144,7 @@ static void action_xiangzi_first(void)
 
     /* 箱子障碍物到箱子 */
     (void)Motor_XYZ(1, 300, 20, 0,       /* X: 不动 */
-                    0, 100, 20, 58,      /* Y: dir=0(后), 100rpm, acc=20, 58cm */
+                    0, 100, 20, 55.0f,   /* Y: dir=0(后), 100rpm, acc=20, 55cm */
                     0, 0.0f);             /* Z: 不动 */
     osDelay(8000);
 
