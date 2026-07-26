@@ -78,7 +78,7 @@ def send_ack():
     uart.write(frame)
 
 
-def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=0):
+def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
     start = time.ticks_ms()
     while True:
         if sensor is not None:
@@ -86,10 +86,11 @@ def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=0):
             Display.show_image(img, x=int((DISPLAY_WIDTH - picture_width) / 2),
                                y=int((DISPLAY_HEIGHT - picture_height) / 2))
             del img
-        data = uart.read()
-        if data and len(data) == FRAME_LEN and verify_xor(data):
-            if data[0] == expected_cmd:
-                return True
+        if uart.any() >= FRAME_LEN:
+            data = uart.read(FRAME_LEN)
+            if data and len(data) == FRAME_LEN and verify_xor(data):
+                if data[0] == expected_cmd:
+                    return True
         if timeout_ms > 0 and time.ticks_ms() - start > timeout_ms:
             return False
         time.sleep_ms(10)
@@ -424,8 +425,14 @@ if __name__ == "__main__":
                               rgb888p_size=[640, 360], display_size=[800, 480])
         yolo_det.config_preprocess()
 
-        # ============ Phase 1: 豆子识别 (Camera 2) ============
-        print("========== Phase 1: Bean Recognition ==========")
+        # ============ Phase 1: 等待 STM32 命令 -> 豆子识别 (Camera 2) ============
+        print("========== Phase 1: Waiting for LOOK_BEAN (0x02) ==========")
+        if not wait_for_cmd(CMD_START_BEAN, timeout_ms=30000):
+            print("Phase 1 command timeout!")
+            raise Exception("P1 timeout")
+        print("Command received, sending ACK")
+        send_ack()
+
         sensor = config_camera(2)
         sensor.run()
         time.sleep_ms(200)
@@ -437,23 +444,24 @@ if __name__ == "__main__":
         print(f"Bean data sent: {['0x%02X' % b for b in bean_result]}")
 
         # 等待 STM32 应答
-        wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor)
+        if not wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor, timeout_ms=10000):
+            print("Phase 1 ACK timeout!")
         print("STM32 ACK received, closing camera 2")
 
         close_sensor(sensor)
         sensor = None
 
-        # ============ Phase 2: 正面数字识别 (Camera 1) ============
-        print("========== Phase 2: Front Number Recognition ==========")
+        # ============ Phase 2: 等待 STM32 命令 -> 正面数字识别 (Camera 1) ============
+        print("========== Phase 2: Waiting for LOOK_NUMBER (0x03) ==========")
+        if not wait_for_cmd(CMD_START_FRONT, timeout_ms=30000):
+            print("Phase 2 command timeout!")
+            raise Exception("P2 timeout")
+        print("Command received, sending ACK")
+        send_ack()
+
         sensor = config_camera(1)
         sensor.run()
         time.sleep_ms(200)
-
-        # 等待 STM32 命令
-        print("Waiting for STM32 command (0x03)...")
-        wait_for_cmd(CMD_START_FRONT, sensor=sensor)
-        print("STM32 command received")
-        send_ack()
 
         front_numbers = recognize_front_numbers(yolo_det, sensor)
         print(f"Front numbers: {['0x%02X' % b for b in front_numbers]}")
@@ -463,27 +471,24 @@ if __name__ == "__main__":
         print("Front number data sent")
 
         # 等待 STM32 应答
-        wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor)
+        if not wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor, timeout_ms=10000):
+            print("Phase 2 ACK timeout!")
         print("STM32 ACK received, closing camera 1")
 
         close_sensor(sensor)
         sensor = None
 
-        # ============ Phase 3: 侧面数字识别 + 推理 (Camera 0) ============
-        print("========== Phase 3: Side Number Recognition ==========")
+        # ============ Phase 3: 等待 STM32 命令 -> 侧面数字 + 推理 (Camera 0) ============
+        print("========== Phase 3: Waiting for LOOK_SIDE (0x01) ==========")
+        if not wait_for_cmd(CMD_START_SIDE, timeout_ms=30000):
+            print("Phase 3 command timeout!")
+            raise Exception("P3 timeout")
+        print("Command received, sending ACK")
+        send_ack()
+
         sensor = config_camera(0)
         sensor.run()
         time.sleep_ms(200)
-
-        # 发送应答确认切换到摄像头0
-        send_ack()
-        print("Camera 0 ready, ACK sent")
-
-        # 等待 STM32 命令
-        print("Waiting for STM32 command (0x01)...")
-        wait_for_cmd(CMD_START_SIDE, sensor=sensor)
-        print("STM32 command received")
-        send_ack()
 
         side_number = recognize_side_number(yolo_det, sensor)
         print(f"Side number: 0x{side_number:02X}")
@@ -499,7 +504,8 @@ if __name__ == "__main__":
         print("Full number data sent")
 
         # 等待 STM32 应答
-        wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor)
+        if not wait_for_cmd(CMD_ACK_CLOSE, sensor=sensor, timeout_ms=10000):
+            print("Phase 3 ACK timeout!")
         print("STM32 ACK received, closing camera 0")
 
         close_sensor(sensor)
