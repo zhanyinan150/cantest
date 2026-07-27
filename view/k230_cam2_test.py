@@ -11,7 +11,7 @@ from media.display import *
 from libs.Utils import *
 
 CAMERA_ID = 2
-KMODEL_PATH = "/sdcard/bestm.kmodel"
+KMODEL_PATH = "/sdcard/best.kmodel"
 
 OUT_RGB888P_WIDTH = ALIGN_UP(640, 16)
 OUT_RGB888P_HEIGHT = 360

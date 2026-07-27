@@ -18,6 +18,12 @@
   *
   * Motor_XYZ 为非阻塞(发完命令即返回), 靠 osDelay 等电机走完。
   *
+  * [联调阶段配置] 验证 K230 识别 + XYZ 电机行程:
+  *   - 升降(Z): 只执行第 1 步上升 35cm, 其余升降置 0(原参数注释保留在原处)
+  *   - 爪子舵机: runActionGroup 全部注释, 改 USART1 文字打印占位
+  *   - 分拣投料: 只打印"豆子->几号箱"决策结果, 不真正投料
+  *   恢复真实动作时取消对应注释即可, 参数一个没丢。
+  *
   * 日志一律用英文: UTF-8 中文字符串在 ARMCC V5.06 下会乱码/报错。
   ******************************************************************************
   */
@@ -28,7 +34,7 @@
 #include "task.h"
 #include "cmsis_os.h"
 #include "motor.h"       /* Motor_XYZ */
-#include "servo.h"       /* runActionGroup — 缺此头文件会被隐式声明(#223-D) */
+#include "servo.h"       /* runActionGroup — 联调阶段调用已注释, 恢复时需要 */
 #include "K230.h"        /* k230_write, K230 命令码, bean_color, Data_Handle1 */
 #include "bsp_log.h"     /* printf 经日志队列 -> LogTask DMA 发 USART1 */
 #include <stdio.h>
@@ -245,24 +251,46 @@ static int k230_phase3_side(void)
   */
 static void place_beans(void)
 {
-    char buf[80];
+    char buf[100];
 
     bean_locked = 0;    /* 解锁, 允许下一轮豆子数据写入 */
+
+    /* 先把 K230 的识别结果原样打出来, 便于判断是识别错还是查表错 */
+    snprintf(buf, sizeof(buf), "[ACT] beans = %02X %02X %02X\r\n",
+             bean_color[0], bean_color[1], bean_color[2]);
+    dbg(buf);
+    snprintf(buf, sizeof(buf), "[ACT] boxes(1..5) = %02X %02X %02X %02X %02X\r\n",
+             number_position[0], number_position[1], number_position[2],
+             number_position[3], number_position[4]);
+    dbg(buf);
 
     /* Data_Handle1 返回命中的箱子位置(1~5), 负值=失败必须报出来:
      *   -1 = 豆子颜色非法(K230 发来的不是 0x06/07/08)
      *   -2 = 该数字不在 number_position 里(识别错或第5位推理失败)
-     * 忽略返回值的话, 这两种情况下豆子会被静默丢弃, 现场完全看不出发生了什么。*/
-    dbg("[ACT] >>> Place beans <<<\r\n");
+     * 忽略返回值的话, 这两种情况下豆子会被静默丢弃, 现场完全看不出发生了什么。
+     * 注: Data_Handle1 内部调的 Action_1..5 仍是 K230.c 里的 __weak 空桩,
+     * 所以只做决策不投料, 与本阶段"抓放用文字代替"一致。 */
+    dbg("[ACT] >>> Place beans (TEXT ONLY, no real drop) <<<\r\n");
     for (int b = 0; b < 3; b++)
     {
-        int pos = Data_Handle1(bean_color[b]);
+        uint8_t c = bean_color[b];
+        const char *cname = (c == BEAN_GREEN)  ? "GREEN"  :
+                            (c == BEAN_YUN)    ? "YUN"    :
+                            (c == BEAN_YELLOW) ? "YELLOW" : "INVALID";
+        int pos = Data_Handle1(c);
+
         if (pos > 0)
-            snprintf(buf, sizeof(buf), "[ACT] bean%d color=%02X -> box %d\r\n",
-                     b + 1, bean_color[b], pos);
+            snprintf(buf, sizeof(buf),
+                     "[SIM] bean%d %s(%02X) -> box %d : drop here\r\n",
+                     b + 1, cname, c, pos);
+        else if (pos == -1)
+            snprintf(buf, sizeof(buf),
+                     "[SIM] bean%d %s(%02X) -> SKIPPED: bad color\r\n",
+                     b + 1, cname, c);
         else
-            snprintf(buf, sizeof(buf), "[ACT] bean%d color=%02X -> SKIPPED (err %d)\r\n",
-                     b + 1, bean_color[b], pos);
+            snprintf(buf, sizeof(buf),
+                     "[SIM] bean%d %s(%02X) -> SKIPPED: not in boxes\r\n",
+                     b + 1, cname, c);
         dbg(buf);
     }
     dbg("[ACT] Done\r\n");
@@ -311,65 +339,83 @@ static void action_1(void *argument)
 /**
   * @brief  抓豆子动作序列
   *         起始点 -> 抓左边豆子 -> 抓中间豆子 -> 准备去放箱子
+  * @note   [联调阶段] 升降(Z)只执行第 1 步上升 35cm, 其余 Z 升降置 0 不动;
+  *         爪子舵机 runActionGroup 全部注释, 改为 USART1 文字打印占位。
+  *         原参数一律以注释保留在原处, 恢复时取消注释即可。
   */
 static void action_douzi_first(void)
 {
-    /* 起始点到抓左边豆子 */
+    dbg("[ACT] === grab beans (Z: only step1 up, servo: text only) ===\r\n");
+
+    /* 起始点到抓左边豆子: Z 上升 35cm —— 本阶段唯一执行的升降动作 */
+    dbg("[ACT] 1/7 move to left bean (X+44 Y+185 Z+35)\r\n");
         (void)Motor_XYZ(1, 300, 30, 44.0f,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
                     1, 100, 20, 185.0f,    /* Y: dir=1(前), 100rpm, acc=20, 185cm */
                     0, 35.0f);           /* Z: dir=0(上), 35cm */
 
 
-        runActionGroup(1,1);//舵机初始化
+        /* runActionGroup(1,1); */          //舵机初始化
+        dbg("[SERVO-SIM] >>> servo init <<<\r\n");
         osDelay(6000);
 
-          //降爪子去抓左边豆子
+          //降爪子去抓左边豆子 —— Z 暂不动(原: 1, 30)
+        dbg("[ACT] 2/7 claw down [Z SKIPPED, orig: down 30]\r\n");
         (void)Motor_XYZ(1, 300, 30, 0,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
                         1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
-                        1, 30);          /* Z: dir=0(上), 35cm */
+                        0, 0.0f);        /* Z: 暂停用, 原为 1, 30 (下降30cm) */
         osDelay(2500);
 
-        runActionGroup(2, 1);//白爪抓
+        /* runActionGroup(2, 1); */         //白爪抓
+        dbg("[SERVO-SIM] >>> WHITE claw GRAB left bean <<<\r\n");
         osDelay(3000);
 
-        //升爪子复位
+        //升爪子复位 —— Z 暂不动(原: 0, 30)
+        dbg("[ACT] 3/7 claw up [Z SKIPPED, orig: up 30]\r\n");
         (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
                         1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
-                        0, 30);        /* Z: dir=0(上), 35cm */
+                        0, 0.0f);      /* Z: 暂停用, 原为 0, 30 (上升30cm) */
         osDelay(2500);
 
         /* 抓中间豆子 */
+        dbg("[ACT] 4/7 move to middle bean (X-20.5)\r\n");
         (void)Motor_XYZ(0, 300, 20, 20.5f, /* X: dir=0(左), 300rpm, acc=20, 20.5cm */
                         1, 100, 20, 0,     /* Y: 不动 */
                         0, 0.0f);          /* Z: 不动 */
         osDelay(4000);
 
-        runActionGroup(3, 1);//转轴去抓中间豆子
+        /* runActionGroup(3, 1); */         //转轴去抓中间豆子
+        dbg("[SERVO-SIM] >>> rotate axis to middle bean <<<\r\n");
         osDelay(2000);
 
-        // 降爪子去抓中间豆子
+        // 降爪子去抓中间豆子 —— Z 暂不动(原: 1, 20)
+        dbg("[ACT] 5/7 claw down [Z SKIPPED, orig: down 20]\r\n");
         (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
                         1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
-                        1, 20);        /* Z: dir=0(上), 35cm */
+                        0, 0.0f);      /* Z: 暂停用, 原为 1, 20 (下降20cm) */
         osDelay(2500);
 
-        runActionGroup(4, 1);//黑爪抓
+        /* runActionGroup(4, 1); */         //黑爪抓
+        dbg("[SERVO-SIM] >>> BLACK claw GRAB middle bean <<<\r\n");
         osDelay(2000);
 
-        // 升爪子复位
+        // 升爪子复位 —— Z 暂不动(原: 0, 20)
+        dbg("[ACT] 6/7 claw up [Z SKIPPED, orig: up 20]\r\n");
         (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
                         1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
-                        0, 20);        /* Z: dir=0(上), 35cm */
+                        0, 0.0f);      /* Z: 暂停用, 原为 0, 20 (上升20cm) */
         osDelay(2500);
 
-        runActionGroup(5, 1);//转轴，进去放箱子准备阶段
+        /* runActionGroup(5, 1); */         //转轴，进去放箱子准备阶段
+        dbg("[SERVO-SIM] >>> rotate axis, ready for box <<<\r\n");
         osDelay(2000);
 
         /* 准备去放箱子 */
+        dbg("[ACT] 7/7 move toward box (X-60)\r\n");
         (void) Motor_XYZ(0, 300, 20, 60.0f, /* X: dir=0(左), 300rpm, acc=20, 60cm */
                          1, 100, 20, 0,     /* Y: 不动 */
                          0, 0.0f);          /* Z: 不动 */
     osDelay(9000);
+    dbg("[ACT] === grab beans done ===\r\n");
 }
 
 /* ===== 分界线后: 放箱子(含障碍物避让) ===== */
@@ -381,13 +427,17 @@ static void action_douzi_first(void)
   */
 static void action_xiangzi_first(void)
 {
+    dbg("[ACT] === place to box ===\r\n");
+
     /* 豆子到箱子障碍物动作一 */
+    dbg("[ACT] obstacle step1 (Y-100)\r\n");
     (void)Motor_XYZ(0, 300, 20, 0,       /* X: 不动 */
                     0, 100, 20, 100.0f,  /* Y: dir=0(后), 100rpm, acc=20, 100cm */
                     0, 0.0f);             /* Z: 不动 */
     osDelay(6000);
 
     /* 豆子到箱子障碍物动作2 */
+    dbg("[ACT] obstacle step2 (X+65 Y-160)\r\n");
     (void)Motor_XYZ(1, 300, 20, 65.0f,   /* X: dir=1(右), 300rpm, acc=20, 65cm */
                     0, 50, 20, 160.0f,   /* Y: dir=0(后), 50rpm, acc=20, 160cm */
                     0, 0.0f);             /* Z: 不动 */
@@ -396,10 +446,13 @@ static void action_xiangzi_first(void)
     (void)k230_phase2_front();   /* 看正面数字 */
 
     /* 箱子障碍物到箱子 */
+    dbg("[ACT] move to box (Y-55)\r\n");
     (void)Motor_XYZ(1, 300, 20, 0,       /* X: 不动 */
                     0, 100, 20, 55.0f,   /* Y: dir=0(后), 100rpm, acc=20, 55cm */
                     0, 0.0f);             /* Z: 不动 */
     osDelay(8000);
 
     (void)k230_phase3_side();    /* 看侧面数字 + 推理第5位 */
+
+    dbg("[ACT] === place to box done ===\r\n");
 }

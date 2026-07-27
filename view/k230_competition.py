@@ -31,7 +31,7 @@ KMODEL_PATH = "/sdcard/best.kmodel"
 MODEL_INPUT_SIZE = [320, 320]
 
 # ======================== 类别映射 ========================
-# bestm.kmodel: 8 classes, 数字在 0-4, 豆子在 5-7
+# best.kmodel: 8 classes, 数字在 0-4, 豆子在 5-7
 CLASS_ID = ["1", "2", "3", "4", "5", "g", "w", "y"]
 CLASS_MAP = {
     "1": 0x01, "2": 0x02, "3": 0x03, "4": 0x04, "5": 0x05,
@@ -548,7 +548,7 @@ if __name__ == "__main__":
         MediaManager.init()
         time.sleep_ms(200)
 
-        # 加载唯一模型 bestm.kmodel (8 classes: 1-5, g, w, y)
+        # 加载唯一模型 best.kmodel (8 classes: 1-5, g, w, y)
         yolo_det = YOLOv11App(KMODEL_PATH, MODEL_INPUT_SIZE,
                               rgb888p_size=[640, 360], display_size=[800, 480])
         yolo_det.config_preprocess()

@@ -199,7 +199,7 @@ if __name__ == "__main__":
 
     try:
         print("========== K230 Mock Competition Start ==========")
-        print("[MOCK] >>> load bestm.kmodel (skipped) <<<")
+        print("[MOCK] >>> load best.kmodel (skipped) <<<")
         print("[MOCK] >>> Display.init (skipped) <<<")
         print("[MOCK] >>> MediaManager.init (skipped) <<<")
         time.sleep_ms(200)
