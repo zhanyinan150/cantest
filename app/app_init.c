@@ -42,7 +42,12 @@
 #define MOTOR_AUTO_STARTUP_DELAY   2000               /* 上电后等待系统稳定(ms), 等电机使能+M2006反馈 */
 
 /* ---- 内部任务函数 ---- */
+/* MotorAutoTask 当前随 #if 0 一起停用(上电动作已改由 action.c 的 Action_Init
+ * 接管), 但函数体保留(里面存着调好的动作序列参数, 恢复时直接用)。放在同一个
+ * #if 0 里可避免 "declared but never referenced" 警告, 又不丢失这段参数。 */
+#if 0
 static void MotorAutoTask(void *argument);
+#endif
 
 /**
   * @brief  应用层初始化: 子系统初始化 + 任务创建
@@ -91,13 +96,26 @@ void App_Init(void)
   Motor_Init();
 #endif
 
+  /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
+   * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
+   * 回调分发逻辑位于 bsp/uart/uart_callback.c。
+   * UART5 接收回调(Emm_V5_UART_RxCpltCallback)已随 Emm_V5.c 重构移除,
+   * 当前 UART5 测试只发送不接收, 不再注册 UART5 回调。 */
+  UART_Callback_Init();
+
+  /* K230 视觉模块: 注册 USART3 接收回调 + 启动 DMA 接收。
+   * 须在 UART_Callback_Init 之后(回调分发系统已就绪)。
+   * USART3 (PB10 TX / PB11 RX) 专供 K230, 不与其他模块冲突。
+   * K230 触发的动作组 Action_1..Action_10 弱定义空桩在 K230.c, 需要真实
+   * 放箱动作时在 action.c 里以同名强定义覆写。 */
+  K230_Init();
+
   /* 上电自动动作任务:
-   * 当前启用 MotorAutoTask(下方), Action_Init 已注释停用。
+   * 当前启用 Action_Init(action.c: 视觉三阶段 + 抓豆放箱), MotorAutoTask 已注释停用。
    * 两者都调 Motor_XYZ, 不可同时运行。
-   * 切回 Action_Init 时: 取消下方注释, 注释掉 MotorAutoTask 即可。 */
+   * 切回 MotorAutoTask 时: 取消下方注释, 注释掉 Action_Init 即可。
+   * 须在 K230_Init 之后: action_1 任务会调 k230_write, 依赖 USART3 已就绪。 */
   Action_Init();
-
-
 
 // #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
 //   const osThreadAttr_t motorAutoTask_attributes = {
@@ -107,19 +125,6 @@ void App_Init(void)
 //   };
 //   osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
 // #endif
-
-  /* 启动 USART1 接收中断, 接收 VOFA+/MATLAB 下发的调参命令
-   * (配合 bsp_printf.c VOFA_UART1_EXCLUSIVE=1, USART1专供JustFloat波形+调参命令)
-   * 回调分发逻辑位于 bsp/uart/uart_callback.c。
-   * UART5 接收回调(Emm_V5_UART_RxCpltCallback)已随 Emm_V5.c 重构移除,
-   * 当前 UART5 测试只发送不接收, 不再注册 UART5 回调。 */
-  UART_Callback_Init();
-
-  /* K230 视觉模块: 注册 USART2 接收回调 + 启动 DMA 接收。
-   * 须在 UART_Callback_Init 之后(回调分发系统已就绪)。
-   * USART2 (PA2 TX / PA3 RX) 专供 K230, 不与其他模块冲突。
-   * K230 触发的动作组 Action_1..Action_10 在 action.c 中实现(弱定义桩在 K230.c)。 */
-  K230_Init();
 }
 
 /**
@@ -147,6 +152,7 @@ void App_Init(void)
   */
 
 
+#if 0  /* 随上面的前向声明一起停用, 保留动作参数备查 */
 static void MotorAutoTask(void *argument)
 {
   (void)argument;
@@ -202,3 +208,4 @@ static void MotorAutoTask(void *argument)
         osDelay(1000);
       }
 }
+#endif /* MotorAutoTask 停用 */
