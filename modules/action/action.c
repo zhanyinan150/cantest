@@ -17,8 +17,7 @@
 #include "task.h"
 #include "cmsis_os.h"
 #include "motor.h"       /* Motor_XYZ */
-#include "K230.h"        /* k230_write, k230_read */
-#include "usart.h"       /* huart2 */
+#include "K230.h"        /* k230_write, K230 命令码 */
 
 /* ---- 任务参数 ---- */
 #define ACTION_TASK_STACK_SIZE   1024               /* 堆栈(word) */
@@ -39,15 +38,15 @@ static void action_xiangzi_first(void);
 /**
   * @brief  初始化动作序列: 创建 action_1 任务
   */
-// void Action_Init(void)
-// {
-//     const osThreadAttr_t attr = {
-//         .name = "ActionTask",
-//         .stack_size = ACTION_TASK_STACK_SIZE * 4,
-//         .priority = (osPriority_t)ACTION_TASK_PRIORITY,
-//     };
-//     osThreadNew(action_1, NULL, &attr);
-// }
+void Action_Init(void)
+{
+    const osThreadAttr_t attr = {
+        .name = "ActionTask",
+        .stack_size = ACTION_TASK_STACK_SIZE * 4,
+        .priority = (osPriority_t)ACTION_TASK_PRIORITY,
+    };
+    osThreadNew(action_1, NULL, &attr);
+}
 
 /**
  * @brief  上电自动动作任务: 依次跑抓豆子 + 放箱子序列, 完成后挂起
@@ -65,17 +64,16 @@ static void action_1(void *argument)
 
 
 
-    k230_write(1);//给k230发送看豆命令
-    osDelay(1000);//等待k230返回结果
-    k230_read(&huart2);//解析k230返回结果
-    osDelay(500);//等待k230解析完成
-    k230_write(6);//给k230发送关闭摄像头命令
+    // k230_write(K230_CMD_LOOK_BEAN);  // 给k230发送看豆命令
+    // osDelay(1000);                   // 等待k230返回结果(自动接收解析)
+    // osDelay(500);                    // 等待k230解析完成
+    // k230_write(K230_CMD_CLOSE);      // 给k230发送关闭摄像头命令
 
 
     action_douzi_first();   /* 抓豆子 ，动作截止到抓完豆子已经完成升降结构移到右边*/
 
     //数字识别我放在action_xiangzi_first里面了
-    action_xiangzi_first(); /* 放箱子 */
+    // action_xiangzi_first(); /* 放箱子 */
 
     for (;;)
     {
@@ -83,13 +81,13 @@ static void action_1(void *argument)
     }
 }
 
-
-
-
-
-
-
-
+/* ===== 动作注释 ===== */
+/**
+ * @brief  去豆子y为1，箱子为0
+ *         远离墙x为0，靠近墙为1
+ *         上升z为0，下降z为1
+ *         
+ */
 
 /* ===== 分界线前: 抓豆子 ===== */
 /**
@@ -99,21 +97,60 @@ static void action_1(void *argument)
 static void action_douzi_first(void)
 {
     /* 起始点到抓左边豆子 */
-    (void)Motor_XYZ(1, 300, 30, 44.0f,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
+        (void)Motor_XYZ(1, 300, 30, 44.0f,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
                     1, 100, 20, 185.0f,    /* Y: dir=1(前), 100rpm, acc=20, 185cm */
                     0, 35.0f);           /* Z: dir=0(上), 35cm */
-    osDelay(6000);
 
-    /* 抓中间豆子 */
-    (void)Motor_XYZ(0, 300, 20, 20.5f,  /* X: dir=0(左), 300rpm, acc=20, 20.5cm */
-                    1, 100, 20, 0,      /* Y: 不动 */
-                    0, 0.0f);            /* Z: 不动 */
-    osDelay(4000);
 
-    /* 准备去放箱子 */
-    (void)Motor_XYZ(0, 300, 20, 60.0f,  /* X: dir=0(左), 300rpm, acc=20, 60cm */
-                    1, 100, 20, 0,      /* Y: 不动 */
-                    0, 0.0f);            /* Z: 不动 */
+        runActionGroup(1,1);//舵机初始化
+        osDelay(6000);
+
+          //降爪子去抓左边豆子
+        (void)Motor_XYZ(1, 300, 30, 0,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        1, 30);          /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        runActionGroup(2, 1);//白爪抓
+        osDelay(3000);
+
+        //升爪子复位
+        (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        0, 30);        /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        /* 抓中间豆子 */
+        (void)Motor_XYZ(0, 300, 20, 20.5f, /* X: dir=0(左), 300rpm, acc=20, 20.5cm */
+                        1, 100, 20, 0,     /* Y: 不动 */
+                        0, 0.0f);          /* Z: 不动 */
+        osDelay(4000);
+
+        runActionGroup(3, 1);//转轴去抓中间豆子
+        osDelay(2000);
+
+        // 降爪子去抓中间豆子
+        (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        1, 20);        /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        runActionGroup(4, 1);//黑爪抓
+        osDelay(2000);
+
+        // 升爪子复位
+        (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        0, 20);        /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        runActionGroup(5, 1);//转轴，进去放箱子准备阶段
+        osDelay(2000);
+
+        /* 准备去放箱子 */
+        (void) Motor_XYZ(0, 300, 20, 60.0f, /* X: dir=0(左), 300rpm, acc=20, 60cm */
+                         1, 100, 20, 0,     /* Y: 不动 */
+                         0, 0.0f);          /* Z: 不动 */
     osDelay(9000);
 }
 
@@ -136,11 +173,10 @@ static void action_xiangzi_first(void)
                     0, 0.0f);             /* Z: 不动 */
     osDelay(6000);
 
-    k230_write(2);      // 开启看中间数字
-    osDelay(1000);      // 等待k230返回结果
-    k230_read(&huart2); // 解析k230返回结果
-    osDelay(500);       // 等待k230解析完成
-    k230_write(6);      // 给k230发送关闭摄像头命令
+    k230_write(K230_CMD_LOOK_NUMBER); // 开启看正面数字
+    osDelay(1000);                    // 等待k230返回结果(自动接收解析)
+    osDelay(500);                     // 等待k230解析完成
+    k230_write(K230_CMD_CLOSE);       // 给k230发送关闭摄像头命令
 
     /* 箱子障碍物到箱子 */
     (void)Motor_XYZ(1, 300, 20, 0,       /* X: 不动 */
@@ -149,11 +185,10 @@ static void action_xiangzi_first(void)
     osDelay(8000);
 
 
-    k230_write(3);      // 开启看侧面数字
-    osDelay(1000);      // 等待k230返回结果
-    k230_read(&huart2); // 解析k230返回结果
-    osDelay(500);       // 等待k230解析完成
-    k230_write(6);      // 给k230发送关闭摄像头命令
+    k230_write(K230_CMD_LOOK_SIDE); // 开启看侧面数字
+    osDelay(1000);                  // 等待k230返回结果(自动接收解析)
+    osDelay(500);                   // 等待k230解析完成
+    k230_write(K230_CMD_CLOSE);     // 给k230发送关闭摄像头命令
 
 
 
