@@ -27,7 +27,7 @@ picture_width = 800
 picture_height = 480
 
 # ======================== 模型路径 ========================
-KMODEL_PATH = "/sdcard/bestm.kmodel"
+KMODEL_PATH = "/sdcard/best.kmodel"
 MODEL_INPUT_SIZE = [320, 320]
 
 # ======================== 类别映射 ========================
