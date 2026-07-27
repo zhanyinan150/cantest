@@ -1,10 +1,13 @@
 /**
   ******************************************************************************
   * @file    action.c
-  * @brief   K230 比赛通讯(主机) + 动作序列 (STM32端)
+  * @brief   动作序列: 抓豆子 -> 放箱子 (Modules层)
   ******************************************************************************
-  * STM32 为通讯主机, 每个阶段: 发命令 -> 等K230 ACK -> 等数据 -> 发ACK
-  * 电机动作用文字占位, 后续替换为实际 Motor_XYZ 调用
+  * action_1 任务: 上电后自动跑预设动作序列, 不依赖串口命令。
+  * 分两段:
+  *   - action_douzi_first:   抓豆子(起始->抓左边豆子->抓中间->准备去放箱子)
+  *   - action_xiangzi_first: 放箱子(障碍物避让->到箱子)
+  * Motor_XYZ 为非阻塞(发完命令即返回), 靠 osDelay 等电机走完。
   ******************************************************************************
   */
 
@@ -13,21 +16,28 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "cmsis_os.h"
-#include "K230.h"
-#include "usart.h"
-#include "bsp_log.h"     /* printf 经日志队列 -> LogTask DMA 发 USART1 */
-#include <string.h>
-#include <stdio.h>
+#include "motor.h"       /* Motor_XYZ */
+#include "K230.h"        /* k230_write, K230 命令码 */
 
-#define ACTION_TASK_STACK_SIZE   1024
-#define ACTION_TASK_PRIORITY     osPriorityNormal
-#define ACTION_STARTUP_DELAY     1000
-#define K230_ACK_TIMEOUT_MS      3000
-#define K230_DATA_TIMEOUT_MS     15000
-#define K230_RETRY_MAX           3
+/* ---- 任务参数 ---- */
+#define ACTION_TASK_STACK_SIZE   1024               /* 堆栈(word) */
+#define ACTION_TASK_PRIORITY     osPriorityNormal   /* 与 MotorAutoTask 同级 */
+#define ACTION_STARTUP_DELAY     1000               /* 等电机使能+M2006反馈稳定(ms) */
 
+/* ---- 内部函数 ---- */
 static void action_1(void *argument);
+static void action_douzi_first(void);
+static void action_xiangzi_first(void);
 
+
+
+//备注一下后面的左边指有电池那边，右边指没电池那边
+
+
+
+/**
+  * @brief  初始化动作序列: 创建 action_1 任务
+  */
 void Action_Init(void)
 {
     const osThreadAttr_t attr = {
@@ -38,198 +48,148 @@ void Action_Init(void)
     osThreadNew(action_1, NULL, &attr);
 }
 
-/* 调试输出: 走 printf -> fputc 行缓冲 -> 日志队列 -> LogTask DMA 发 USART1。
- * 不可直接 HAL_UART_Transmit(&huart1,...): 会与 LogTask 的 DMA 发送抢同一个
- * USART1, 正是 bsp_log.c 文件头列为 HardFault 根因的用法。 */
-static void dbg(const char *s)
-{
-    printf("%s", s);
-}
-
 /**
-  * @brief  等待事件标志(计数器语义), 成功后消费一个事件
-  * @note   k230_ack_flag 是计数器(K230 可能连发多个 ACK), bean_flag /
-  *         full_number_flag 是 0/1, 两者都适用"非零即有事件, 取走减一"。
-  */
-static int wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
-{
-    uint32_t elapsed = 0;
-    while (!(*flag))
-    {
-        osDelay(10);
-        elapsed += 10;
-        if (elapsed >= timeout_ms)
-            return -1;
-    }
-    (*flag)--;          /* 消费一个事件, 不要粗暴清零以免丢掉已到达的下一个 */
-    return 0;
-}
-
-/**
-  * @brief  发一次命令 + 等一次 ACK, **不重试**
-  * @note   重试策略一律由调用方决定。之前把重试写在这里, 而调用方自己也有
-  *         一层 K230_RETRY_MAX 循环, 两层嵌套后实际重试 3x3=9 次(约 27s
-  *         才放弃), 与宏名和文档说的"最多 3 次"对不上。
-  */
-static int send_cmd_once(uint8_t cmd)
-{
-    k230_ack_flag = 0;                       /* 丢弃上一轮残留 ACK */
-    if (k230_write(cmd) != 0)                /* 发送失败(总线忙) */
-    {
-        dbg("[RTY] uart tx failed\r\n");
-        osDelay(50);
-        return -1;
-    }
-    return wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS);
-}
-
-/* 发命令 + 等 K230 ACK, 超时重试最多 K230_RETRY_MAX 次 */
-static int send_cmd_and_wait_ack(uint8_t cmd)
-{
-    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
-    {
-        if (send_cmd_once(cmd) == 0)
-            return 0;
-        dbg("[RTY] no ack, retry...\r\n");
-    }
-    return -1;
-}
-
-/* 发命令 + 等 ACK + 等数据, 任一步超时则重发命令, 最多 K230_RETRY_MAX 次。
- * 这里必须调 send_cmd_once 而不是 send_cmd_and_wait_ack —— 后者自带重试, 嵌在
- * 本函数的循环里就是 9 次。 */
-static int send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
-{
-    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
-    {
-        /* 发命令前清数据标志: 否则上一轮/上电前残留的 1 会让 wait_flag 立刻
-         * 返回成功, 而 bean_color/number_position 里是过期数据。 */
-        *data_flag = 0;
-
-        if (send_cmd_once(cmd) != 0)
-        {
-            dbg("[RTY] no ack, retry...\r\n");
-            continue;
-        }
-        if (wait_flag(data_flag, K230_DATA_TIMEOUT_MS) == 0)
-            return 0;
-
-        /* 数据超时: 此时 K230 多半卡在"等主机 ACK"这一步, 直接重发识别命令
-         * 它是不认的(它只等 0x06)。先补发一个 CLOSE 让对端退回空闲态, 再重发。 */
-        dbg("[RTY] data timeout, send CLOSE to resync then resend\r\n");
-        k230_write(K230_CMD_CLOSE);
-        osDelay(200);
-    }
-    return -1;
-}
-
+ * @brief  上电自动动作任务: 依次跑抓豆子 + 放箱子序列, 完成后挂起
+ */
 static void action_1(void *argument)
 {
     (void)argument;
-    osDelay(ACTION_STARTUP_DELAY);
+    osDelay(ACTION_STARTUP_DELAY); /* 等电机使能 + M2006 反馈稳定 */
 
-    char buf[80];
-    dbg("\r\n=== K230 Competition (Master) ===\r\n");
 
-    /* ======== Phase 1: 豆子识别 ======== */
-    dbg("[P1] Send LOOK_BEAN\r\n");
-    if (send_cmd_wait_ack_wait_data(K230_CMD_LOOK_BEAN, &bean_flag) != 0)
-    {
-        dbg("[P1] FAILED after retries!\r\n");
-        goto idle;
-    }
-    snprintf(buf, sizeof(buf), "[P1] Bean: %02X %02X %02X\r\n",
-             bean_color[0], bean_color[1], bean_color[2]);
-    dbg(buf);
-    k230_write(K230_CMD_CLOSE);
-    dbg("[P1] ACK sent\r\n");
 
-    /* ---- Motor: grab beans ---- */
-    dbg("[ACT] >>> Motor: grab beans (start->left->middle->ready) <<<\r\n");
-    osDelay(1000);
+    /////////////////////////////////////////////////*
+    //我只写了一套动作的xy的动作，然后这个动作里面你的视觉没有作用,我写那两个函数是为了方便让你检查单片机对你数据的收发是否正常
+    /////////////////////////////////////////
 
-    /* ======== Phase 2: front number ======== */
-    /* ---- Motor: obstacle avoidance ---- */
-    dbg("[ACT] >>> Motor: obstacle avoidance <<<\r\n");
-    osDelay(1000);
 
-    dbg("[P2] Send LOOK_NUMBER\r\n");
-    if (send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER) != 0)
-    {
-        dbg("[P2] FAILED after retries!\r\n");
-        goto idle;
-    }
-    dbg("[P2] ACK received, wait recognition done...\r\n");
 
-    /* Phase 2: K230 识别完再发一个 ACK(同样是 0x0A), 不发数据帧。
-     * 注意不要在这里清零 k230_ack_flag: 若 K230 识别很快, 第二个 ACK 可能在
-     * send_cmd_and_wait_ack 返回前就已到达并被计数, 清零会把它抹掉导致白等。 */
-    {
-        int p2_ok = 0;
-        for (int retry = 0; retry < K230_RETRY_MAX; retry++)
-        {
-            if (wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) == 0)
-            {
-                p2_ok = 1;
-                break;
-            }
-            dbg("[P2] recognition timeout, resync + resend LOOK_NUMBER\r\n");
-            k230_write(K230_CMD_CLOSE);
-            osDelay(200);
-            /* 同样只重发一次, 不用 send_cmd_and_wait_ack, 否则又是 3x3 嵌套 */
-            send_cmd_once(K230_CMD_LOOK_NUMBER);
-        }
-        if (!p2_ok)
-        {
-            dbg("[P2] FAILED after retries!\r\n");
-            goto idle;
-        }
-    }
-    dbg("[P2] Recognition done\r\n");
-    k230_write(K230_CMD_CLOSE);
-    dbg("[P2] ACK sent\r\n");
+    // k230_write(K230_CMD_LOOK_BEAN);  // 给k230发送看豆命令
+    // osDelay(1000);                   // 等待k230返回结果(自动接收解析)
+    // osDelay(500);                    // 等待k230解析完成
+    // k230_write(K230_CMD_CLOSE);      // 给k230发送关闭摄像头命令
 
-    /* ======== Phase 3: side number + inference ======== */
-    /* ---- Motor: move to box ---- */
-    dbg("[ACT] >>> Motor: move to box <<<\r\n");
-    osDelay(1000);
 
-    dbg("[P3] Send LOOK_SIDE\r\n");
-    if (send_cmd_wait_ack_wait_data(K230_CMD_LOOK_SIDE, &full_number_flag) != 0)
-    {
-        dbg("[P3] FAILED after retries!\r\n");
-        goto idle;
-    }
-    snprintf(buf, sizeof(buf), "[P3] Numbers: %02X %02X %02X %02X %02X\r\n",
-             number_position[0], number_position[1], number_position[2],
-             number_position[3], number_position[4]);
-    dbg(buf);
-    k230_write(K230_CMD_CLOSE);
-    dbg("[P3] ACK sent\r\n");
+    action_douzi_first();   /* 抓豆子 ，动作截止到抓完豆子已经完成升降结构移到右边*/
 
-    bean_locked = 0;
+    //数字识别我放在action_xiangzi_first里面了
+    // action_xiangzi_first(); /* 放箱子 */
 
-    /* ---- place beans ----
-     * Data_Handle1 返回命中的箱子位置(1~5), 负值=失败必须报出来:
-     *   -1 = 豆子颜色非法(K230 发来的不是 0x06/07/08)
-     *   -2 = 该数字不在 number_position 里(识别错或第5位推理失败)
-     * 原来忽略返回值, 这两种情况下豆子会被静默丢弃, 现场完全看不出发生了什么。*/
-    dbg("[ACT] >>> Place beans <<<\r\n");
-    for (int b = 0; b < 3; b++)
-    {
-        int pos = Data_Handle1(bean_color[b]);
-        if (pos > 0)
-            snprintf(buf, sizeof(buf), "[ACT] bean%d color=%02X -> box %d\r\n",
-                     b + 1, bean_color[b], pos);
-        else
-            snprintf(buf, sizeof(buf), "[ACT] bean%d color=%02X -> SKIPPED (err %d)\r\n",
-                     b + 1, bean_color[b], pos);
-        dbg(buf);
-    }
-    dbg("[ACT] Done\r\n");
-
-idle:
-    dbg("=== All phases complete ===\r\n");
     for (;;)
+    {
         osDelay(1000);
+    }
+}
+
+/* ===== 动作注释 ===== */
+/**
+ * @brief  去豆子y为1，箱子为0
+ *         远离墙x为0，靠近墙为1
+ *         上升z为0，下降z为1
+ *         
+ */
+
+/* ===== 分界线前: 抓豆子 ===== */
+/**
+  * @brief  抓豆子动作序列
+  *         起始点 -> 抓左边豆子 -> 抓中间豆子 -> 准备去放箱子
+  */
+static void action_douzi_first(void)
+{
+    /* 起始点到抓左边豆子 */
+        (void)Motor_XYZ(1, 300, 30, 44.0f,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                    1, 100, 20, 185.0f,    /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                    0, 35.0f);           /* Z: dir=0(上), 35cm */
+
+
+        runActionGroup(1,1);//舵机初始化
+        osDelay(6000);
+
+          //降爪子去抓左边豆子
+        (void)Motor_XYZ(1, 300, 30, 0,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        1, 30);          /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        runActionGroup(2, 1);//白爪抓
+        osDelay(3000);
+
+        //升爪子复位
+        (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        0, 30);        /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        /* 抓中间豆子 */
+        (void)Motor_XYZ(0, 300, 20, 20.5f, /* X: dir=0(左), 300rpm, acc=20, 20.5cm */
+                        1, 100, 20, 0,     /* Y: 不动 */
+                        0, 0.0f);          /* Z: 不动 */
+        osDelay(4000);
+
+        runActionGroup(3, 1);//转轴去抓中间豆子
+        osDelay(2000);
+
+        // 降爪子去抓中间豆子
+        (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        1, 20);        /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        runActionGroup(4, 1);//黑爪抓
+        osDelay(2000);
+
+        // 升爪子复位
+        (void)Motor_XYZ(1, 300, 30, 0, /* X: dir=1(右), 300rpm, acc=30, 44cm */
+                        1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+                        0, 20);        /* Z: dir=0(上), 35cm */
+        osDelay(2500);
+
+        runActionGroup(5, 1);//转轴，进去放箱子准备阶段
+        osDelay(2000);
+
+        /* 准备去放箱子 */
+        (void) Motor_XYZ(0, 300, 20, 60.0f, /* X: dir=0(左), 300rpm, acc=20, 60cm */
+                         1, 100, 20, 0,     /* Y: 不动 */
+                         0, 0.0f);          /* Z: 不动 */
+    osDelay(9000);
+}
+
+/* ===== 分界线后: 放箱子(含障碍物避让) ===== */
+/**
+  * @brief  放箱子动作序列
+  *         障碍物动作1 -> 障碍物动作2 -> 箱子障碍物到箱子
+  */
+static void action_xiangzi_first(void)
+{
+    /* 豆子到箱子障碍物动作一 */
+    (void)Motor_XYZ(0, 300, 20, 0,       /* X: 不动 */
+                    0, 100, 20, 100.0f,  /* Y: dir=0(后), 100rpm, acc=20, 100cm */
+                    0, 0.0f);             /* Z: 不动 */
+    osDelay(6000);
+
+    /* 豆子到箱子障碍物动作2 */
+    (void)Motor_XYZ(1, 300, 20, 65.0f,   /* X: dir=1(右), 300rpm, acc=20, 65cm */
+                    0, 50, 20, 160.0f,   /* Y: dir=0(后), 50rpm, acc=20, 160cm */
+                    0, 0.0f);             /* Z: 不动 */
+    osDelay(6000);
+
+    k230_write(K230_CMD_LOOK_NUMBER); // 开启看正面数字
+    osDelay(1000);                    // 等待k230返回结果(自动接收解析)
+    osDelay(500);                     // 等待k230解析完成
+    k230_write(K230_CMD_CLOSE);       // 给k230发送关闭摄像头命令
+
+    /* 箱子障碍物到箱子 */
+    (void)Motor_XYZ(1, 300, 20, 0,       /* X: 不动 */
+                    0, 100, 20, 55.0f,   /* Y: dir=0(后), 100rpm, acc=20, 55cm */
+                    0, 0.0f);             /* Z: 不动 */
+    osDelay(8000);
+
+
+    k230_write(K230_CMD_LOOK_SIDE); // 开启看侧面数字
+    osDelay(1000);                  // 等待k230返回结果(自动接收解析)
+    osDelay(500);                   // 等待k230解析完成
+    k230_write(K230_CMD_CLOSE);     // 给k230发送关闭摄像头命令
+
+
+
 }
