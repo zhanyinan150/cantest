@@ -144,8 +144,13 @@ def flush_rx():
 
 
 def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
+    """等 STM32 发来指定命令。timeout_ms<=0 表示无限等。
+
+    无限等时必须留 os.exitpoint(), 否则 IDE 的停止按钮 / Ctrl-C 打断不了循环。
+    """
     start = time.ticks_ms()
     while True:
+        os.exitpoint()
         if sensor is not None:
             img = sensor.snapshot(chn=CAM_CHN_ID_0)
             Display.show_image(img, x=int((DISPLAY_WIDTH - picture_width) / 2),
@@ -173,6 +178,7 @@ def wait_first_cmd_with_ready(expected_cmd, ready_period_ms=300, timeout_ms=0):
     last_ready = time.ticks_ms()
     send_ready()                       # 立即发一次, 减少握手延迟
     while True:
+        os.exitpoint()                 # 无限等也要能被 IDE 停止按钮打断
         for f in poll_frames():
             if f[0] == expected_cmd:
                 return True
@@ -633,9 +639,10 @@ if __name__ == "__main__":
         # 清掉上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
         flush_rx()
         print("========== Phase 2: Waiting for LOOK_NUMBER (0x03) ==========")
-        if not wait_for_cmd(CMD_START_FRONT, timeout_ms=30000):
-            print("Phase 2 command timeout!")
-            raise Exception("P2 timeout")
+        # 无限等: STM32 从 P1 结束到发 LOOK_NUMBER, 中间要跑完抓豆(约38s)+越障
+        # (约12s)共 50s 左右, 远超原来的 30s 上限。到点 raise 会把整个脚本带走,
+        # 之后 P2/P3 必然零应答。比赛节奏由主机主导, K230 不能自行判超时退出。
+        wait_for_cmd(CMD_START_FRONT, timeout_ms=0)
         print("Command received, sending ACK")
         send_ack()
 
@@ -662,9 +669,8 @@ if __name__ == "__main__":
         # 清掉上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
         flush_rx()
         print("========== Phase 3: Waiting for LOOK_SIDE (0x01) ==========")
-        if not wait_for_cmd(CMD_START_SIDE, timeout_ms=30000):
-            print("Phase 3 command timeout!")
-            raise Exception("P3 timeout")
+        # 同 Phase 2: 主机在 P2 之后还要走一段行程才发 LOOK_SIDE, 不设上限。
+        wait_for_cmd(CMD_START_SIDE, timeout_ms=0)
         print("Command received, sending ACK")
         send_ack()
 

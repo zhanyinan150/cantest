@@ -45,7 +45,7 @@
 /* MotorAutoTask 当前随 #if 0 一起停用(上电动作已改由 action.c 的 Action_Init
  * 接管), 但函数体保留(里面存着调好的动作序列参数, 恢复时直接用)。放在同一个
  * #if 0 里可避免 "declared but never referenced" 警告, 又不丢失这段参数。 */
-#if 1
+#if 0
 static void MotorAutoTask(void *argument);
 #endif
 
@@ -115,11 +115,11 @@ void App_Init(void)
    * 两者都调 Motor_XYZ, 不可同时运行。
    * 切回 MotorAutoTask 时: 取消下方注释, 注释掉 Action_Init 即可。
    * 须在 K230_Init 之后: action_1 任务会调 k230_write, 依赖 USART3 已就绪。 */
-  // Action_Init();
+  Action_Init();
 
- #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
-   const osThreadAttr_t motorAutoTask_attributes = {
-     .name = "MotorAutoTask",
+#if 0  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+  const osThreadAttr_t motorAutoTask_attributes = {
+    .name = "MotorAutoTask",
     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
     .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
   };
@@ -152,7 +152,7 @@ void App_Init(void)
   */
 
 
-#if 1  /* 随上面的前向声明一起停用, 保留动作参数备查 */
+#if 0  /* 随上面的前向声明一起停用, 保留动作参数备查 */
 
 /* ===== 动作注释 ===== */
 /**

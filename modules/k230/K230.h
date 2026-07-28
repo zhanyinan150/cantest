@@ -137,7 +137,12 @@ int Data_Handle1(uint8_t key);
 
 /* ---- K230 通讯超时/重试 ---- */
 #define K230_ACK_TIMEOUT_MS      3000    /* 等对端 ACK */
-#define K230_DATA_TIMEOUT_MS     15000   /* 等识别结果(含推理耗时) */
+/* 必须大于 K230 端 RECOGNIZE_TIMEOUT_MS(20s) + 摄像头启动 200ms + 余量。
+ * 小于它就会出现 5s 错位窗口: K230 还在识别循环里没出结果, 主机已判超时并发
+ * CLOSE 重同步 + 重发命令; K230 识别完发出的是数据帧而不是 ACK, 主机不认继续
+ * 等 ACK 超时, 而 K230 转去等 CLOSE 时正好读到主机重同步发的那个 0x06, 误判
+ * 本阶段成功并进入下一阶段 —— 两端就此错开一个阶段。 */
+#define K230_DATA_TIMEOUT_MS     25000   /* 等识别结果(含推理耗时) */
 #define K230_RETRY_MAX           3       /* 重试次数, 只在一层生效, 勿嵌套 */
 #define K230_READY_TIMEOUT_MS    30000   /* 等 K230 就绪(0x0B): 模型加载可能很慢 */
 
