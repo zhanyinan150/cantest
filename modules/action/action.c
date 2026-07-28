@@ -145,6 +145,9 @@ static void action_1(void *argument)
 
     dbg("\r\n=== K230 Competition (Master) ===\r\n");
 
+    /* 上电先等 K230 模型加载完成(就绪握手), 再发第一条命令 */
+    (void)k230_wait_ready();
+
     /* Phase1 必须在抓豆之前: 抓完再识别就来不及决定放哪个箱 */
     (void)k230_phase1_bean();
 

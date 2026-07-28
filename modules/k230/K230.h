@@ -69,6 +69,8 @@ extern __IO uint8_t count;
 /* K230 ACK (0x0A) 计数器: 每收到一帧 0x0A 自增, 消费后自减或清零。
  * 用计数器而非布尔标志, 避免 Phase2 连发两个 ACK 时丢掉第二个。 */
 extern __IO uint8_t k230_ack_flag;
+/* K230 就绪标志(1=模型加载完成): 上电握手用, 主机等到此标志才发 LOOK_BEAN */
+extern __IO uint8_t k230_ready_flag;
 
 /* ---- 接收统计(诊断用, 调试器观察是否丢帧) ---- */
 extern __IO uint32_t k230_rx_frames;     /* 成功解析的整帧数 */
@@ -137,6 +139,15 @@ int Data_Handle1(uint8_t key);
 #define K230_ACK_TIMEOUT_MS      3000    /* 等对端 ACK */
 #define K230_DATA_TIMEOUT_MS     15000   /* 等识别结果(含推理耗时) */
 #define K230_RETRY_MAX           3       /* 重试次数, 只在一层生效, 勿嵌套 */
+#define K230_READY_TIMEOUT_MS    30000   /* 等 K230 就绪(0x0B): 模型加载可能很慢 */
+
+/**
+  * @brief  上电握手: 阻塞等 K230 就绪(0x0B), 超时也放行
+  * @note   必须在 k230_phase1_bean 之前调用: K230 加载模型慢, 主机先等就绪帧
+  *         再发命令, 否则命令会在 K230 就绪前发出而被漏掉。
+  * @retval 0=收到就绪帧, -1=超时(仍可继续)
+  */
+int k230_wait_ready(void);
 
 /**
   * @brief  Phase1: 豆子颜色识别, 结果填入 bean_color[3]

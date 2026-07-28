@@ -27,7 +27,7 @@ picture_width = 800
 picture_height = 480
 
 # ======================== 模型路径 ========================
-KMODEL_PATH = "/sdcard/best.kmodel"
+KMODEL_PATH = "/sdcard/bestm.kmodel"
 MODEL_INPUT_SIZE = [320, 320]
 
 # ======================== 类别映射 ========================
@@ -51,6 +51,7 @@ CMD_START_FRONT = 0x03
 CMD_START_SIDE = 0x01
 CMD_ACK_CLOSE = 0x06
 K230_ACK = 0x0A
+K230_READY = 0x0B  # 就绪帧: 模型加载完成, 循环上报直到收到 STM32 第一条命令
 
 
 # ======================== 通信辅助函数 ========================
@@ -78,6 +79,14 @@ def send_frame(frame_type, payload):
 def send_ack():
     frame = bytearray(FRAME_LEN)
     frame[0] = K230_ACK
+    frame[7] = calc_xor(frame[:7])
+    uart.write(frame)
+
+
+def send_ready():
+    """就绪帧 0x0B: 模型加载完成后循环发, STM32 收到才开始发命令。"""
+    frame = bytearray(FRAME_LEN)
+    frame[0] = K230_READY
     frame[7] = calc_xor(frame[:7])
     uart.write(frame)
 
@@ -152,10 +161,34 @@ def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
         time.sleep_ms(10)
 
 
+def wait_first_cmd_with_ready(expected_cmd, ready_period_ms=300, timeout_ms=0):
+    """等 STM32 第一条命令, 期间周期性发就绪帧 0x0B(握手)。
+
+    解决上电时序竞争: STM32 一上电就发命令, 而 K230 还在加载 kmodel(5~10s),
+    命令被 UART 硬件缓冲但程序没跑到接收, 主机 9s 内等不到 ACK 就判 FAILED。
+    改为 K230 加载完循环发 0x0B, STM32 先等就绪帧再发命令, 谁先启动都能对上。
+    timeout_ms<=0 表示无限等(比赛必须等到主机, 不能自行超时退出)。
+    """
+    start = time.ticks_ms()
+    last_ready = time.ticks_ms()
+    send_ready()                       # 立即发一次, 减少握手延迟
+    while True:
+        for f in poll_frames():
+            if f[0] == expected_cmd:
+                return True
+            print("  [WARN] discard 0x%02X, waiting 0x%02X" % (f[0], expected_cmd))
+        if time.ticks_diff(time.ticks_ms(), last_ready) >= ready_period_ms:
+            send_ready()
+            last_ready = time.ticks_ms()
+        if timeout_ms > 0 and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+            return False
+        time.sleep_ms(10)
+
+
 # ======================== YOLOv11 检测类 ========================
 class YOLOv11App(AIBase):
     def __init__(self, kmodel_path, model_input_size,
-                 confidence_threshold=0.5, nms_threshold=0.45,
+                 confidence_threshold=0.3, nms_threshold=0.45,
                  rgb888p_size=[640, 360], display_size=[800, 480], debug_mode=0):
         super().__init__(kmodel_path, model_input_size, rgb888p_size, debug_mode)
         self.class_id = CLASS_ID
@@ -536,6 +569,21 @@ def infer_fifth(known_nums):
     return 0x01
 
 
+# ======================== 显示辅助函数 ========================
+def show_boot_screen():
+    """开机欢迎界面: 标题 + 等待提示, 停留到收到 STM32 第一个命令。
+
+    OSD 层直接绘制文字, 无需摄像头图像。Display 已在主函数开头 init。
+    """
+    osd = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.ARGB8888)
+    osd.clear()
+    osd.draw_string_advanced(200, 160, 48, "Vision System", color=(255, 0, 255, 255))
+    osd.draw_string_advanced(220, 260, 32, "Waiting for start...", color=(255, 255, 255, 255))
+    Display.show_image(osd, 0, 0, Display.LAYER_OSD1)
+    del osd
+    gc.collect()
+
+
 # ======================== 主函数 ========================
 if __name__ == "__main__":
     clock = time.clock()
@@ -553,11 +601,13 @@ if __name__ == "__main__":
                               rgb888p_size=[640, 360], display_size=[800, 480])
         yolo_det.config_preprocess()
 
-        # ============ Phase 1: 等待 STM32 命令 -> 豆子识别 (Camera 2) ============
-        print("========== Phase 1: Waiting for LOOK_BEAN (0x02) ==========")
-        if not wait_for_cmd(CMD_START_BEAN, timeout_ms=30000):
-            print("Phase 1 command timeout!")
-            raise Exception("P1 timeout")
+        # 开机界面: 标题 + 等待提示, 停留到收到 STM32 第一个命令
+        show_boot_screen()
+
+        # ============ Phase 1: 就绪握手 -> 等命令 -> 豆子识别 (Camera 2) ============
+        # 模型已加载完成, 循环发就绪帧 0x0B 直到 STM32 发来 LOOK_BEAN
+        print("========== Phase 1: Ready handshake, waiting LOOK_BEAN (0x02) ==========")
+        wait_first_cmd_with_ready(CMD_START_BEAN)
         print("Command received, sending ACK")
         send_ack()
 

@@ -45,6 +45,7 @@ __IO uint8_t front_number_flag    = 0;        /* 正面数字就绪标志 */
 __IO uint8_t full_number_flag     = 0;        /* 完整5数字就绪标志 */
 __IO uint8_t count       = 0;                 /* 数字数据帧计数 */
 __IO uint8_t k230_ack_flag = 0;               /* K230 ACK (0x0A) 就绪标志 */
+__IO uint8_t k230_ready_flag = 0;             /* K230 就绪 (0x0B): 模型加载完成 */
 
 /* ==================== 动作组弱定义桩 ==================== */
 /* 用户在 action.c 中以同名强定义覆写, 链接器自动替换弱定义。
@@ -155,6 +156,12 @@ void k230_read(UART_HandleTypeDef *huart, uint16_t size)
          * 若两帧间隔短于任务轮询周期, 用布尔标志会丢掉第二个, 导致主机白等超时。 */
         if (k230_ack_flag < 255)
             k230_ack_flag++;
+    }
+    else if (K230_Rx[0] == 0x0B)
+    {
+        /* 就绪帧: K230 模型加载完成后循环上报, 直到收到 LOOK_BEAN。
+         * 用布尔而非计数: 主机只需知道"已就绪", 多发几帧不需累加。 */
+        k230_ready_flag = 1;
     }
 
     /* 重新武装接收, 等待下一帧 */
@@ -287,6 +294,26 @@ static int k230_wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
     }
     (*flag)--;          /* 消费一个事件, 不要粗暴清零以免丢掉已到达的下一个 */
     return 0;
+}
+
+/**
+  * @brief  上电握手: 阻塞等 K230 就绪(0x0B), 超时也放行以免整局卡死
+  * @note   K230 加载 kmodel 常需 5~10s, 远超 P1 的 ACK 等待窗口。若主机上电就
+  *         发 LOOK_BEAN, K230 还没跑到接收就漏掉命令。改为主机先等就绪帧,
+  *         K230 加载完循环发 0x0B, 谁先启动都能对上。
+  * @retval 0=收到就绪帧, -1=超时(仍继续流程, K230 可能已就绪只是漏了就绪帧)
+  */
+int k230_wait_ready(void)
+{
+    k230_ready_flag = 0;
+    k230_dbg("[RDY] wait K230 ready (0x0B)...\r\n");
+    if (k230_wait_flag(&k230_ready_flag, K230_READY_TIMEOUT_MS) == 0)
+    {
+        k230_dbg("[RDY] K230 ready\r\n");
+        return 0;
+    }
+    k230_dbg("[RDY] ready timeout, proceed anyway\r\n");
+    return -1;
 }
 
 /**
