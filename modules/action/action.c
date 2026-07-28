@@ -46,6 +46,7 @@
 static void action_1(void *argument);
 static void action_douzi_first(void);
 static void action_xiangzi_first(void);
+static void goto_box(uint8_t target_box);
 
 /* ===== 动作注释 ===== */
 /**
@@ -285,7 +286,35 @@ static void action_xiangzi_first(void)
     dbg("[ACT] === place to box done ===\r\n");
 }
 
-static void action_xiangzi_(void)
-{
+/* ===== 箱子间X轴移动 (以第4个箱子为原点) ===== */
+/* 以第4个箱子为坐标原点(0), 左为负, 右为正, 单位cm。
+ *   箱子1: -93  箱子2: -73  箱子3: -35  箱子4: 0  箱子5: +25
+ * 箱子编号1~5从左到右, 与 K230 number_position 一致。
+ * 方向: dir=0(左/远离墙), dir=1(右/靠近墙)。 */
+static const float box_x_coord[6] = {0, -93.0f, -73.0f, -35.0f, 0.0f, 25.0f};
+/* 当前所在箱子编号, action_xiangzi_first 结束后应为4 */
+static uint8_t s_current_box = 4;
 
+/**
+ * @brief  从当前箱子直线移动X轴到目标箱子 (Y/Z不动)
+ *         直接用坐标差算位移: delta = 目标坐标 - 当前坐标,
+ *         delta>0 向右(dir=1), delta<0 向左(dir=0), 一步到位不经中转。
+ * @param  target_box  目标箱子位置 1~5
+ */
+static void goto_box(uint8_t target_box)
+{
+    if (target_box < 1 || target_box > 5)
+        return;
+    if (target_box == s_current_box)
+        return;
+
+    float delta = box_x_coord[target_box] - box_x_coord[s_current_box];
+    uint8_t dir = (delta > 0.0f) ? 1 : 0;   /* >0 向右, <0 向左 */
+    float  dist = (delta > 0.0f) ? delta : -delta;
+
+    (void)Motor_XYZ(dir, 400, 50, dist,
+                    1, 100, 20, 0,   /* Y: 不动 */
+                    0, 0.0f);         /* Z: 不动 */
+    osDelay(3000);
+    s_current_box = target_box;
 }
