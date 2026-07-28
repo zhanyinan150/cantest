@@ -15,12 +15,21 @@
   *   3. K230_Init() 注册 USART3 回调并启动 DMA 接收
   *
   * 通信协议详见 K230.h 文件头注释。
+  *
+  * K230 三阶段通讯协议层(从 action.c 移植): 发命令->等ACK->等数据->回ACK
+  *   的三阶段封装, 带 ACK/数据超时重试(最多 K230_RETRY_MAX 次)。
+  *   k230_phase1_bean / k230_phase2_front / k230_phase3_side 供 action.c 调用。
   ******************************************************************************
   */
 
 #include "K230.h"
 #include "usart.h"           /* huart3 */
 #include "uart_callback.h"   /* UART_Callback_Register */
+#include "cmsis_os2.h"        /* osDelay (协议层重试延时) */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "bsp_log.h"          /* printf -> 日志队列 -> LogTask DMA 发 USART1 */
+#include <stdio.h>            /* snprintf (协议层格式化输出) */
 
 /* ==================== 模块变量 ==================== */
 
@@ -249,5 +258,176 @@ int Data_Handle1(uint8_t key)
         default: return -2;                    /* 目标数字不在 number_position 中 */
     }
     return pos;
+}
+
+/* ==================== K230 通讯协议层 ==================== */
+/* 从 action.c 移植: 发命令->等ACK->等数据->回ACK 的三阶段封装。
+ * 调试输出走 printf -> 日志队列 -> LogTask DMA 发 USART1,
+ * 不可直接 HAL_UART_Transmit(&huart1,...): 会与 LogTask 的 DMA 发送抢同一个
+ * USART1, 正是 bsp_log.c 文件头列为 HardFault 根因的用法。 */
+static void k230_dbg(const char *s)
+{
+    printf("%s", s);
+}
+
+/**
+  * @brief  等待事件标志(计数器语义), 成功后消费一个事件
+  * @note   k230_ack_flag 是计数器(K230 可能连发多个 ACK), bean_flag /
+  *         full_number_flag 是 0/1, 两者都适用"非零即有事件, 取走减一"。
+  */
+static int k230_wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
+{
+    uint32_t elapsed = 0;
+    while (!(*flag))
+    {
+        osDelay(10);
+        elapsed += 10;
+        if (elapsed >= timeout_ms)
+            return -1;
+    }
+    (*flag)--;          /* 消费一个事件, 不要粗暴清零以免丢掉已到达的下一个 */
+    return 0;
+}
+
+/**
+  * @brief  发一次命令 + 等一次 ACK, **不重试**
+  * @note   重试策略一律由调用方决定。若这里也重试, 而调用方又套一层
+  *         K230_RETRY_MAX 循环, 嵌套后实际重试 3x3=9 次(约 27s 才放弃),
+  *         与宏名和文档说的"最多 3 次"对不上。
+  */
+static int k230_send_cmd_once(uint8_t cmd)
+{
+    k230_ack_flag = 0;                       /* 丢弃上一轮残留 ACK */
+    if (k230_write(cmd) != 0)                /* 发送失败(总线忙) */
+    {
+        k230_dbg("[RTY] uart tx failed\r\n");
+        osDelay(50);
+        return -1;
+    }
+    return k230_wait_flag(&k230_ack_flag, K230_ACK_TIMEOUT_MS);
+}
+
+/* 发命令 + 等 K230 ACK, 超时重试最多 K230_RETRY_MAX 次 */
+static int k230_send_cmd_and_wait_ack(uint8_t cmd)
+{
+    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
+    {
+        if (k230_send_cmd_once(cmd) == 0)
+            return 0;
+        k230_dbg("[RTY] no ack, retry...\r\n");
+    }
+    return -1;
+}
+
+/* 发命令 + 等 ACK + 等数据, 任一步超时则重发命令, 最多 K230_RETRY_MAX 次。
+ * 这里必须调 k230_send_cmd_once 而不是 k230_send_cmd_and_wait_ack -- 后者自带
+ * 重试, 嵌在本函数的循环里就是 9 次。 */
+static int k230_send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_flag)
+{
+    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
+    {
+        /* 发命令前清数据标志: 否则上一轮/上电前残留的 1 会让 wait_flag 立刻
+         * 返回成功, 而 bean_color/number_position 里是过期数据。 */
+        *data_flag = 0;
+
+        if (k230_send_cmd_once(cmd) != 0)
+        {
+            k230_dbg("[RTY] no ack, retry...\r\n");
+            continue;
+        }
+        if (k230_wait_flag(data_flag, K230_DATA_TIMEOUT_MS) == 0)
+            return 0;
+
+        /* 数据超时: 此时 K230 多半卡在"等主机 ACK"这一步, 直接重发识别命令
+         * 它是不认的(它只等 0x06)。先补发一个 CLOSE 让对端退回空闲态, 再重发。 */
+        k230_dbg("[RTY] data timeout, send CLOSE to resync then resend\r\n");
+        k230_write(K230_CMD_CLOSE);
+        osDelay(200);
+    }
+    return -1;
+}
+
+/* ---- 三阶段封装: 与 k230_competition.py 的 Phase1/2/3 一一对应 ---- */
+
+/**
+  * @brief  Phase1: 豆子颜色识别, 结果填入 bean_color[3]
+  * @retval 0=成功, -1=重试耗尽
+  */
+int k230_phase1_bean(void)
+{
+    char buf[80];
+
+    k230_dbg("[P1] Send LOOK_BEAN\r\n");
+    if (k230_send_cmd_wait_ack_wait_data(K230_CMD_LOOK_BEAN, &bean_flag) != 0)
+    {
+        k230_dbg("[P1] FAILED after retries!\r\n");
+        return -1;
+    }
+    snprintf(buf, sizeof(buf), "[P1] Bean: %02X %02X %02X\r\n",
+             bean_color[0], bean_color[1], bean_color[2]);
+    k230_dbg(buf);
+    k230_write(K230_CMD_CLOSE);      /* 回应答, K230 才会关摄像头进入下一阶段 */
+    k230_dbg("[P1] ACK sent\r\n");
+    return 0;
+}
+
+/**
+  * @brief  Phase2: 正面数字识别(K230 端自存, 不回传数据帧, 只发两个 ACK)
+  * @retval 0=成功, -1=重试耗尽
+  */
+int k230_phase2_front(void)
+{
+    k230_dbg("[P2] Send LOOK_NUMBER\r\n");
+    if (k230_send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER) != 0)
+    {
+        k230_dbg("[P2] FAILED after retries!\r\n");
+        return -1;
+    }
+    k230_dbg("[P2] ACK received, wait recognition done...\r\n");
+
+    /* K230 识别完再发一个 ACK(同样是 0x0A), 不发数据帧。
+     * 注意不要在这里清零 k230_ack_flag: 若 K230 识别很快, 第二个 ACK 可能在
+     * send_cmd_and_wait_ack 返回前就已到达并被计数, 清零会把它抹掉导致白等。 */
+    for (int retry = 0; retry < K230_RETRY_MAX; retry++)
+    {
+        if (k230_wait_flag(&k230_ack_flag, K230_DATA_TIMEOUT_MS) == 0)
+        {
+            k230_dbg("[P2] Recognition done\r\n");
+            k230_write(K230_CMD_CLOSE);
+            k230_dbg("[P2] ACK sent\r\n");
+            return 0;
+        }
+        k230_dbg("[P2] recognition timeout, resync + resend LOOK_NUMBER\r\n");
+        k230_write(K230_CMD_CLOSE);
+        osDelay(200);
+        /* 只重发一次, 不用 send_cmd_and_wait_ack, 否则又是 3x3 嵌套 */
+        k230_send_cmd_once(K230_CMD_LOOK_NUMBER);
+    }
+
+    k230_dbg("[P2] FAILED after retries!\r\n");
+    return -1;
+}
+
+/**
+  * @brief  Phase3: 侧面数字 + 推理第5位, 结果填入 number_position[5]
+  * @retval 0=成功, -1=重试耗尽
+  */
+int k230_phase3_side(void)
+{
+    char buf[80];
+
+    k230_dbg("[P3] Send LOOK_SIDE\r\n");
+    if (k230_send_cmd_wait_ack_wait_data(K230_CMD_LOOK_SIDE, &full_number_flag) != 0)
+    {
+        k230_dbg("[P3] FAILED after retries!\r\n");
+        return -1;
+    }
+    snprintf(buf, sizeof(buf), "[P3] Numbers: %02X %02X %02X %02X %02X\r\n",
+             number_position[0], number_position[1], number_position[2],
+             number_position[3], number_position[4]);
+    k230_dbg(buf);
+    k230_write(K230_CMD_CLOSE);
+    k230_dbg("[P3] ACK sent\r\n");
+    return 0;
 }
 

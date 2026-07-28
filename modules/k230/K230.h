@@ -122,4 +122,38 @@ int k230_write(uint8_t command);
   */
 int Data_Handle1(uint8_t key);
 
+/* ==================== K230 通讯协议层 (三阶段主机通讯) ==================== */
+/* 从 action.c 移植而来: 发命令->等ACK->等数据->回ACK 的三阶段封装,
+ * 与 k230_competition.py 的 Phase1/2/3 一一对应, 由 action.c 调用。
+ *
+ * K230 端(k230_competition.py)是严格的三阶段状态机, 顺序不可打乱:
+ *   Phase1 LOOK_BEAN(0x02)   -> ACK -> 豆子颜色数据帧 -> 等主机 CLOSE(0x06)
+ *   Phase2 LOOK_NUMBER(0x03) -> ACK -> (识别完再发一个 ACK, 无数据帧) -> 等 CLOSE
+ *   Phase3 LOOK_SIDE(0x01)   -> ACK -> 五数字数据帧 -> 等主机 CLOSE(0x06)
+ * 因此每一步都必须"发命令->等ACK->等数据->回ACK", 不能只 k230_write 后盲等
+ * osDelay: 对端没跟上时主机会拿着上一轮的过期数据继续跑。 */
+
+/* ---- K230 通讯超时/重试 ---- */
+#define K230_ACK_TIMEOUT_MS      3000    /* 等对端 ACK */
+#define K230_DATA_TIMEOUT_MS     15000   /* 等识别结果(含推理耗时) */
+#define K230_RETRY_MAX           3       /* 重试次数, 只在一层生效, 勿嵌套 */
+
+/**
+  * @brief  Phase1: 豆子颜色识别, 结果填入 bean_color[3]
+  * @retval 0=成功, -1=重试耗尽
+  */
+int k230_phase1_bean(void);
+
+/**
+  * @brief  Phase2: 正面数字识别(K230 端自存, 不回传数据帧, 只发两个 ACK)
+  * @retval 0=成功, -1=重试耗尽
+  */
+int k230_phase2_front(void);
+
+/**
+  * @brief  Phase3: 侧面数字 + 推理第5位, 结果填入 number_position[5]
+  * @retval 0=成功, -1=重试耗尽
+  */
+int k230_phase3_side(void);
+
 #endif /* __K230_H */

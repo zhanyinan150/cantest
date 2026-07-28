@@ -172,10 +172,16 @@ static void MotorAutoTask(void *argument)
   //  runActionGroup(1,1);
 
     // 起始点到抓左边豆子test
-    (void)Motor_XYZ(0, 300, 30,  0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
+    (void)Motor_XYZ(0, 300, 30, 93.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
                     1, 100, 20, 0,   /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
                     0, 25.0f);         /* Z: dir=0(上), 25cm */
-      osDelay(6000);
+      osDelay(12000);
+      
+      (void)Motor_XYZ(1, 300, 30, 93.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
+                      1, 100, 20, 0,     /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                      0, 0);         /* Z: dir=0(上), 25cm */
+      osDelay(12000);
+
       for (;;)
       {
         osDelay(1000);
