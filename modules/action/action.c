@@ -47,7 +47,6 @@ static void action_1(void *argument);
 static void action_douzi_first(void);
 static void action_xiangzi_first(void);
 static void goto_box(uint8_t target_box);
-static void drop_bean_at_box(uint8_t target_box, uint8_t servo_action);
 
 /* ===== 动作注释 ===== */
 /**
@@ -284,22 +283,20 @@ static void action_xiangzi_first(void)
     dbg("[ACT] === place to box done ===\r\n");
 }
 
-/* ===== 放豆子: 箱子间X轴移动 (以第4个箱子为原点) ===== */
-/* 各箱子相对第4个箱子的X轴距离(cm)与方向:
- *   dir=0(左/远离墙) -> 箱子1,2,3
- *   dir=1(右/靠近墙) -> 箱子5
- *   箱子4为原点, 距离=0
- * 箱子编号1~5从左到右, 与 K230 number_position 一致。 */
-static const float   box_x_offset[6] = {0, 93.0f, 73.0f, 35.0f, 0.0f, 25.0f};
-static const uint8_t box_x_dir[6]    = {0, 0,      0,      0,      0,     1};
+/* ===== 箱子间X轴移动 (以第4个箱子为原点) ===== */
+/* 以第4个箱子为坐标原点(0), 左为负, 右为正, 单位cm。
+ *   箱子1: -93  箱子2: -73  箱子3: -35  箱子4: 0  箱子5: +25
+ * 箱子编号1~5从左到右, 与 K230 number_position 一致。
+ * 方向: dir=0(左/远离墙), dir=1(右/靠近墙)。 */
+static const float box_x_coord[6] = {0, -93.0f, -73.0f, -35.0f, 0.0f, 25.0f};
 /* 当前所在箱子编号, action_xiangzi_first 结束后应为4 */
 static uint8_t s_current_box = 4;
 
 /**
- * @brief  从当前箱子移动X轴到目标箱子 (Y/Z不动)
- *         内部经第4个箱子中转: 不在4号时先回4号, 再去目标。
- *         所有距离以第4个箱子为基准, 回4号=原方向取反。
- * @param  target_box  目标箱子编号 1~5
+ * @brief  从当前箱子直线移动X轴到目标箱子 (Y/Z不动)
+ *         直接用坐标差算位移: delta = 目标坐标 - 当前坐标,
+ *         delta>0 向右(dir=1), delta<0 向左(dir=0), 一步到位不经中转。
+ * @param  target_box  目标箱子位置 1~5
  */
 static void goto_box(uint8_t target_box)
 {
@@ -308,44 +305,13 @@ static void goto_box(uint8_t target_box)
     if (target_box == s_current_box)
         return;
 
-    /* 不在第4个箱子时, 先回到第4个箱子(方向取反) */
-    if (s_current_box != 4)
-    {
-        uint8_t ret_dir = box_x_dir[s_current_box] ? 0 : 1;
-        (void)Motor_XYZ(ret_dir, 400, 50, box_x_offset[s_current_box],
-                        1, 100, 20, 0,   /* Y: 不动 */
-                        0, 0.0f);         /* Z: 不动 */
-        osDelay(3000);
-        s_current_box = 4;
-    }
+    float delta = box_x_coord[target_box] - box_x_coord[s_current_box];
+    uint8_t dir = (delta > 0.0f) ? 1 : 0;   /* >0 向右, <0 向左 */
+    float  dist = (delta > 0.0f) ? delta : -delta;
 
-    /* 从第4个箱子移动到目标箱子 */
-    if (target_box != 4)
-    {
-        (void)Motor_XYZ(box_x_dir[target_box], 400, 50, box_x_offset[target_box],
-                        1, 100, 20, 0,   /* Y: 不动 */
-                        0, 0.0f);         /* Z: 不动 */
-        osDelay(3000);
-    }
+    (void)Motor_XYZ(dir, 400, 50, dist,
+                    1, 100, 20, 0,   /* Y: 不动 */
+                    0, 0.0f);         /* Z: 不动 */
+    osDelay(3000);
     s_current_box = target_box;
-}
-
-/**
- * @brief  前往目标箱子放豆子 (X轴移动 + 舵机放料)
- *         在 action_xiangzi_first 到达第4个箱子后调用。
- *         Y/Z不动, 只动X; 到达后执行舵机放料动作。
- * @param  target_box     目标箱子编号 1~5
- * @param  servo_action   放料舵机动作组编号 (根据爪子/放料动作选择)
- */
-static void drop_bean_at_box(uint8_t target_box, uint8_t servo_action)
-{
-    char buf[80];
-    snprintf(buf, sizeof(buf), "[ACT] goto box %d, servo %d\r\n",
-             target_box, servo_action);
-    dbg(buf);
-
-    goto_box(target_box);
-
-    runActionGroup(servo_action, 1);  /* 舵机放料 */
-    osDelay(2000);
 }
