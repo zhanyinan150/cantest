@@ -36,6 +36,21 @@
 #define K230_CMD_LOOK_NUMBER    3
 #define K230_CMD_LOOK_SIDE      1
 #define K230_CMD_CLOSE          6
+/* RESYNC: 主机没收到本阶段回复, 要求 K230 重发上一次回复(数据帧/识别完成ACK)。
+ * 必须与 CLOSE 分开 —— CLOSE 的含义是"数据已收到, 关摄像头进下一阶段", 若拿它
+ * 兼作重同步信号, K230 在等 CLOSE 时收到就会误判本阶段成功并前进, 而主机其实
+ * 还在重试本阶段, 两端就此错开。RESYNC 不改变任一端的阶段。 */
+#define K230_CMD_RESYNC         0x0C
+
+/* ---- 阶段号 (填在 byte[1], 两端据此丢弃跨阶段的迟到帧) ----
+ * 关键作用在 k230_ack_flag: 它是累加计数器, 上一阶段迟到的 ACK 会被下一阶段
+ * 白白消费掉, 导致主机以为对端已应答而实际没有。带上阶段号即可原地丢弃。
+ * 0 = 不属于任何阶段(就绪帧 0x0B), 收到 0 一律不校验 —— 兼容未升级的 K230
+ * 脚本(旧版 byte[1] 恒为 0), 退化成与升级前完全一致的行为, 不会锁死通讯。 */
+#define K230_PHASE_NONE         0
+#define K230_PHASE_BEAN         1
+#define K230_PHASE_FRONT        2
+#define K230_PHASE_SIDE         3
 
 /* ---- 豆子颜色编码 (K230 返回) ---- */
 #define BEAN_GREEN   0x06   /* 绿豆 */
@@ -77,6 +92,8 @@ extern __IO uint32_t k230_rx_frames;     /* 成功解析的整帧数 */
 extern __IO uint32_t k230_rx_badxor;     /* XOR 校验失败帧数 */
 extern __IO uint32_t k230_rx_badlen;     /* 长度非 8 的残帧数 */
 extern __IO uint32_t k230_rx_rearm_err;  /* 重新武装 DMA 失败次数 */
+extern __IO uint32_t k230_rx_badphase;   /* 阶段号不符被丢弃的帧数(跨阶段迟到帧) */
+extern __IO uint32_t k230_last_rx_tick;  /* 最近一次收到合法帧的 tick, 存活检测用 */
 
 /* ---- K230 触发的动作组 (在 action.c 中实现, 此处仅声明) ----
  * Data_Handle1 根据 key(豆子颜色) 查 number_position 得位置 1~5, 调 Action_1..5
@@ -145,6 +162,11 @@ int Data_Handle1(uint8_t key);
 #define K230_DATA_TIMEOUT_MS     25000   /* 等识别结果(含推理耗时) */
 #define K230_RETRY_MAX           3       /* 重试次数, 只在一层生效, 勿嵌套 */
 #define K230_READY_TIMEOUT_MS    30000   /* 等 K230 就绪(0x0B): 模型加载可能很慢 */
+/* 数据超时后先发 RESYNC 让对端重发一帧(便宜), 失败才退回重发整条命令(贵:
+ * K230 要重开摄像头重跑一次识别, 20s 起步)。这个窗口只等一帧重传, 给 3s 够了。 */
+#define K230_RESYNC_TIMEOUT_MS   3000
+/* 对端静默多久就在日志里示警。用于区分"K230 挂了"和"识别慢", 只打印不改流程。 */
+#define K230_SILENT_WARN_MS      3000
 
 /**
   * @brief  上电握手: 阻塞等 K230 就绪(0x0B), 超时也放行

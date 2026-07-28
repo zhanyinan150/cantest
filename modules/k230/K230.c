@@ -68,6 +68,12 @@ __IO uint32_t k230_rx_frames  = 0;   /* 成功解析的整帧数 */
 __IO uint32_t k230_rx_badxor  = 0;   /* XOR 校验失败帧数 */
 __IO uint32_t k230_rx_badlen  = 0;   /* 长度不等于 8 的残帧数 */
 __IO uint32_t k230_rx_rearm_err = 0; /* 重新武装 DMA 失败次数 */
+__IO uint32_t k230_rx_badphase  = 0; /* 阶段号不符被丢弃的帧数 */
+__IO uint32_t k230_last_rx_tick = 0; /* 最近一次收到合法帧的 tick */
+
+/* 当前阶段号, 填进发出帧的 byte[1], 并用于校验收到帧的 byte[1]。
+ * 由 k230_phase1/2/3 在各自入口设置; k230_wait_ready 期间为 NONE。 */
+static __IO uint8_t s_cur_phase = K230_PHASE_NONE;
 
 /**
   * @brief  武装 USART3 的 IDLE 空闲切帧 DMA 接收
@@ -116,6 +122,23 @@ void k230_read(UART_HandleTypeDef *huart, uint16_t size)
     }
 
     k230_rx_frames++;
+    /* 存活时戳: 只要收到一帧合法帧就刷新。osKernelGetTickCount 在 CMSIS-RTOS2
+     * 里内部走 IS_IRQ() 分支调 xTaskGetTickCountFromISR, 中断上下文可安全调用。 */
+    k230_last_rx_tick = osKernelGetTickCount();
+
+    /* 阶段号校验: byte[1] 与主机当前阶段不符 = 上一阶段的迟到帧, 原地丢弃。
+     * 不丢的话最要命的是 0x0A —— k230_ack_flag 是累加计数器, 迟到的 ACK 会被
+     * 下一阶段白白消费, 主机以为对端应答了而实际没有, 从此步步错位。
+     * byte[1]==0 放行: 未升级的 K230 脚本 byte[1] 恒为 0, 此时退化成升级前的
+     * 行为(不校验), 保证新固件配旧脚本也能跑, 不会因协议不匹配直接锁死。
+     * 就绪帧 0x0B 不属于任何阶段, 一律放行。 */
+    if (K230_Rx[0] != 0x0B && K230_Rx[1] != K230_PHASE_NONE &&
+        K230_Rx[1] != s_cur_phase)
+    {
+        k230_rx_badphase++;
+        k230_arm_rx(huart);
+        return;
+    }
 
     if (K230_Rx[0] == 0x02)
     {
@@ -191,7 +214,9 @@ void K230_Init(void)
 int k230_write(uint8_t command)
 {
     Command_Data[0] = command;
-    Command_Data[1] = (command == K230_CMD_CLOSE) ? 0 : 1;
+    /* byte[1] = 当前阶段号。原来这里是个 (command==CLOSE)?0:1 的标志位, K230 端
+     * 从来不读它, 现改为承载阶段号, 让对端能识别并丢弃跨阶段的迟到帧。 */
+    Command_Data[1] = s_cur_phase;
     for (uint8_t i = 2; i < K230_RX_BUF_SIZE - 1; i++)
         Command_Data[i] = 0;
 
@@ -305,6 +330,7 @@ static int k230_wait_flag(volatile uint8_t *flag, uint32_t timeout_ms)
   */
 int k230_wait_ready(void)
 {
+    s_cur_phase = K230_PHASE_NONE;   /* 握手期不属于任何阶段 */
     k230_ready_flag = 0;
     k230_dbg("[RDY] wait K230 ready (0x0B)...\r\n");
     if (k230_wait_flag(&k230_ready_flag, K230_READY_TIMEOUT_MS) == 0)
@@ -324,6 +350,24 @@ int k230_wait_ready(void)
   */
 static int k230_send_cmd_once(uint8_t cmd)
 {
+    /* 存活示警: 只打印, 不改流程。现场靠这行区分"K230 挂了/没接线"和"识别慢" ——
+     * 三阶段全 no ack 时最难判断的正是这个, 光看主机日志分不出来。 */
+    if (k230_last_rx_tick == 0)
+    {
+        k230_dbg("[WARN] K230 never responded since boot\r\n");
+    }
+    else
+    {
+        uint32_t silent = osKernelGetTickCount() - k230_last_rx_tick;
+        if (silent > K230_SILENT_WARN_MS)
+        {
+            char wb[48];
+            snprintf(wb, sizeof(wb), "[WARN] K230 silent %ums\r\n",
+                     (unsigned int)silent);
+            k230_dbg(wb);
+        }
+    }
+
     k230_ack_flag = 0;                       /* 丢弃上一轮残留 ACK */
     if (k230_write(cmd) != 0)                /* 发送失败(总线忙) */
     {
@@ -365,10 +409,21 @@ static int k230_send_cmd_wait_ack_wait_data(uint8_t cmd, volatile uint8_t *data_
         if (k230_wait_flag(data_flag, K230_DATA_TIMEOUT_MS) == 0)
             return 0;
 
-        /* 数据超时: 此时 K230 多半卡在"等主机 ACK"这一步, 直接重发识别命令
-         * 它是不认的(它只等 0x06)。先补发一个 CLOSE 让对端退回空闲态, 再重发。 */
-        k230_dbg("[RTY] data timeout, send CLOSE to resync then resend\r\n");
-        k230_write(K230_CMD_CLOSE);
+        /* 数据超时: 先试最便宜的一招 —— 发 RESYNC 让 K230 把上次那帧再发一遍。
+         * 绝不能发 CLOSE: 那是"数据已收到, 关摄像头进下一阶段"的意思, K230 收到
+         * 会真的前进, 而主机其实还在重试本阶段, 两端就此错开一个阶段。
+         * RESYNC 不改变任一端的阶段, 只补一次重传。 */
+        k230_dbg("[RTY] data timeout, send RESYNC\r\n");
+        k230_write(K230_CMD_RESYNC);
+        if (k230_wait_flag(data_flag, K230_RESYNC_TIMEOUT_MS) == 0)
+        {
+            k230_dbg("[RTY] resync ok\r\n");
+            return 0;
+        }
+
+        /* 重传也没来: K230 多半根本没在听(挂了, 或还卡在识别循环里)。下一轮把
+         * 整条命令重发, 让它重开摄像头重跑一次识别 —— 贵但是唯一的退路。 */
+        k230_dbg("[RTY] resync failed, resend cmd\r\n");
         osDelay(200);
     }
     return -1;
@@ -384,6 +439,7 @@ int k230_phase1_bean(void)
 {
     char buf[80];
 
+    s_cur_phase = K230_PHASE_BEAN;   /* 之后所有收发帧的 byte[1] 都带这个号 */
     k230_dbg("[P1] Send LOOK_BEAN\r\n");
     if (k230_send_cmd_wait_ack_wait_data(K230_CMD_LOOK_BEAN, &bean_flag) != 0)
     {
@@ -404,6 +460,7 @@ int k230_phase1_bean(void)
   */
 int k230_phase2_front(void)
 {
+    s_cur_phase = K230_PHASE_FRONT;
     k230_dbg("[P2] Send LOOK_NUMBER\r\n");
     if (k230_send_cmd_and_wait_ack(K230_CMD_LOOK_NUMBER) != 0)
     {
@@ -424,8 +481,19 @@ int k230_phase2_front(void)
             k230_dbg("[P2] ACK sent\r\n");
             return 0;
         }
-        k230_dbg("[P2] recognition timeout, resync + resend LOOK_NUMBER\r\n");
-        k230_write(K230_CMD_CLOSE);
+        /* 同 Phase1: 先发 RESYNC 要一次重传。不能发 CLOSE —— 会让 K230 误以为
+         * 本阶段已完成而关摄像头前进, 而主机还在等它的识别完成 ACK。 */
+        k230_dbg("[P2] recognition timeout, send RESYNC\r\n");
+        k230_write(K230_CMD_RESYNC);
+        if (k230_wait_flag(&k230_ack_flag, K230_RESYNC_TIMEOUT_MS) == 0)
+        {
+            k230_dbg("[P2] Recognition done (resync)\r\n");
+            k230_write(K230_CMD_CLOSE);
+            k230_dbg("[P2] ACK sent\r\n");
+            return 0;
+        }
+
+        k230_dbg("[P2] resync failed, resend LOOK_NUMBER\r\n");
         osDelay(200);
         /* 只重发一次, 不用 send_cmd_and_wait_ack, 否则又是 3x3 嵌套 */
         k230_send_cmd_once(K230_CMD_LOOK_NUMBER);
@@ -443,6 +511,7 @@ int k230_phase3_side(void)
 {
     char buf[80];
 
+    s_cur_phase = K230_PHASE_SIDE;
     k230_dbg("[P3] Send LOOK_SIDE\r\n");
     if (k230_send_cmd_wait_ack_wait_data(K230_CMD_LOOK_SIDE, &full_number_flag) != 0)
     {
