@@ -54,24 +54,26 @@ static void action_1(void *argument);
 static void action_douzi_first(void);
 static void action_xiangzi_first(void);
 
-
-
-//备注一下后面的左边指有电池那边，右边指没电池那边
-
-
+/* ===== 动作注释 ===== */
+/**
+ * @brief  去豆子y为1，箱子为0
+ *         远离墙x为0，靠近墙为1
+ *         上升z为0，下降z为1
+ *
+ */
 
 /**
   * @brief  初始化动作序列: 创建 action_1 任务
   */
-void Action_Init(void)
-{
-    const osThreadAttr_t attr = {
-        .name = "ActionTask",
-        .stack_size = ACTION_TASK_STACK_SIZE * 4,
-        .priority = (osPriority_t)ACTION_TASK_PRIORITY,
-    };
-    osThreadNew(action_1, NULL, &attr);
-}
+// void Action_Init(void)
+// {
+//     const osThreadAttr_t attr = {
+//         .name = "ActionTask",
+//         .stack_size = ACTION_TASK_STACK_SIZE * 4,
+//         .priority = (osPriority_t)ACTION_TASK_PRIORITY,
+//     };
+//     osThreadNew(action_1, NULL, &attr);
+// }
 
 /* ==================== K230 通讯协议层 ==================== */
 
@@ -450,7 +452,7 @@ static void action_xiangzi_first(void)
     (void)Motor_XYZ(1, 300, 20, 0,       /* X: 不动 */
                     0, 100, 20, 55.0f,   /* Y: dir=0(后), 100rpm, acc=20, 55cm */
                     0, 0.0f);             /* Z: 不动 */
-    osDelay(8000);
+    osDelay(8000);//这里到达了第4个箱子位置
 
     (void)k230_phase3_side();    /* 看侧面数字 + 推理第5位 */
 

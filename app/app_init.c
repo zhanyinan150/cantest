@@ -45,7 +45,7 @@
 /* MotorAutoTask 当前随 #if 0 一起停用(上电动作已改由 action.c 的 Action_Init
  * 接管), 但函数体保留(里面存着调好的动作序列参数, 恢复时直接用)。放在同一个
  * #if 0 里可避免 "declared but never referenced" 警告, 又不丢失这段参数。 */
-#if 0
+#if 1
 static void MotorAutoTask(void *argument);
 #endif
 
@@ -115,16 +115,16 @@ void App_Init(void)
    * 两者都调 Motor_XYZ, 不可同时运行。
    * 切回 MotorAutoTask 时: 取消下方注释, 注释掉 Action_Init 即可。
    * 须在 K230_Init 之后: action_1 任务会调 k230_write, 依赖 USART3 已就绪。 */
-  Action_Init();
+  // Action_Init();
 
-// #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
-//   const osThreadAttr_t motorAutoTask_attributes = {
-//     .name = "MotorAutoTask",
-//     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
-//     .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
-//   };
-//   osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
-// #endif
+ #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+   const osThreadAttr_t motorAutoTask_attributes = {
+     .name = "MotorAutoTask",
+    .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
+    .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
+  };
+  osThreadNew(MotorAutoTask, NULL, &motorAutoTask_attributes);
+#endif
 }
 
 /**
@@ -152,7 +152,16 @@ void App_Init(void)
   */
 
 
-#if 0  /* 随上面的前向声明一起停用, 保留动作参数备查 */
+#if 1  /* 随上面的前向声明一起停用, 保留动作参数备查 */
+
+/* ===== 动作注释 ===== */
+/**
+ * @brief  去豆子y为1，箱子为0
+ *         远离墙x为0，靠近墙为1
+ *         上升z为0，下降z为1
+ *
+ */
+
 static void MotorAutoTask(void *argument)
 {
   (void)argument;
@@ -165,44 +174,8 @@ static void MotorAutoTask(void *argument)
     // 起始点到抓左边豆子test
     (void)Motor_XYZ(0, 300, 30,  0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
                     1, 100, 20, 0,   /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                    0, 35);         /* Z: dir=0(上), 25cm */
+                    0, 25.0f);         /* Z: dir=0(上), 25cm */
       osDelay(6000);
-      osDelay(2000);
-      // 起始点到抓左边豆子
-      // (void)Motor_XYZ(1, 300, 30, 0,   /* X: dir=1(右), 50rpm, acc=20, 10cm */
-      //                 1, 100, 20, 185, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-      //                 1, 20.0f);       /* Z: dir=0(上), 25cm */
-      // osDelay(6000);
-
-      //  // 抓中间豆子
-      //  (void)Motor_XYZ(0, 300, 20, 20.5f,       /* X: dir=1(右), 50rpm, acc=20, 10cm */
-      //                  1, 100, 20, 0, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-      //                  0, 0.0f);           /* Z: dir=0(上), 25cm */
-      //  osDelay(4000);
-
-      //  // 准备去放箱子
-      //  (void)Motor_XYZ(0, 300, 20, 60.0f, /* X: dir=1(右), 50rpm, acc=20, 10cm */
-      //                  1, 100, 20, 0,    /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-      //                  0, 0.0f);         /* Z: dir=0(上), 25cm */
-      //  osDelay(9000);
-
-      //  // 豆子到箱子障碍物动作一
-      //  (void)Motor_XYZ(0, 300, 20, 0,       /* X: dir=1(右), 50rpm, acc=20, 10cm */
-      //                  0, 100, 20, 100.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-      //                  0, 0.0f);           /* Z: dir=0(上), 25cm */
-      //  osDelay(6000);
-
-      //  // 豆子到箱子障碍物动作2
-      //  (void)Motor_XYZ(1, 300, 20, 65.0f,      /* X: dir=1(右), 50rpm, acc=20, 10cm */
-      //                  0, 100, 20, 160.0f, /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-      //                  0, 0.0f);           /* Z: dir=0(上), 25cm */
-      //  osDelay(6000);
-
-      //  //箱子障碍物到箱子
-      //  (void)Motor_XYZ(1, 300, 20, 0, /* X: dir=1(右), 50rpm, acc=20, 10cm */
-      //                  0, 100, 20, 58,     /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-      //                  0, 0.0f);         /* Z: dir=0(上), 25cm */
-      osDelay(8000);
       for (;;)
       {
         osDelay(1000);
