@@ -255,7 +255,7 @@ int k230_write(uint8_t command)
   * @param  key  目标豆子颜色: BEAN_GREEN(0x06)/BEAN_YUN(0x07)/BEAN_YELLOW(0x08)
   * @note   颜色->目标值映射: 绿=2, 芸=3, 黄=1 (与 K230 返回的 number_position 编码一致)
   */
-int Data_Handle1(uint8_t key)
+int Data_yinshe(uint8_t key)
 {
     uint8_t target = 0;
     uint8_t pos = 0;
@@ -280,15 +280,15 @@ int Data_Handle1(uint8_t key)
     /* 3、五位位置 switch, 调对应动作组。
      * pos==0 表示 number_position 里没有该数字(K230 识别错/推理失败),
      * 必须把失败回报给调用方, 否则这颗豆子会被静默丢弃且毫无提示。 */
-    switch (pos)
-    {
-        case 1: Action_1(); break;
-        case 2: Action_2(); break;
-        case 3: Action_3(); break;
-        case 4: Action_4(); break;
-        case 5: Action_5(); break;
-        default: return -2;                    /* 目标数字不在 number_position 中 */
-    }
+    // switch (pos)
+    // {
+    //     case 1: Action_1(); break;
+    //     case 2: Action_2(); break;
+    //     case 3: Action_3(); break;
+    //     case 4: Action_4(); break;
+    //     case 5: Action_5(); break;
+    //     default: return -2;                    /* 目标数字不在 number_position 中 */
+    // }
     return pos;
 }
 

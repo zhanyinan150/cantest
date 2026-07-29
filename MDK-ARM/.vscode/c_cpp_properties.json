@@ -46,7 +46,8 @@
                 "c:\\Users\\lanan\\Desktop\\github tsst\\cantest\\Middlewares\\Third_Party\\FreeRTOS\\Source",
                 "c:\\Users\\lanan\\Desktop\\github tsst\\cantest\\Middlewares\\Third_Party\\FreeRTOS\\Source\\portable\\MemMang",
                 "c:\\Users\\lanan\\Desktop\\github tsst\\cantest\\Middlewares\\ST\\STM32_USB_Device_Library\\Core\\Src",
-                "c:\\Users\\lanan\\Desktop\\github tsst\\cantest\\Middlewares\\ST\\STM32_USB_Device_Library\\Class\\CDC\\Src"
+                "c:\\Users\\lanan\\Desktop\\github tsst\\cantest\\Middlewares\\ST\\STM32_USB_Device_Library\\Class\\CDC\\Src",
+                "c:\\Users\\lanan\\Desktop\\github tsst\\cantest"
             ],
             "defines": [
                 "USE_HAL_DRIVER",
