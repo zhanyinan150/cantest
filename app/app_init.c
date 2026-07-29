@@ -111,13 +111,13 @@ void App_Init(void)
   K230_Init();
 
   /* 上电自动动作任务:
-   * 当前启用 Action_Init(action.c: 视觉三阶段 + 抓豆放箱), MotorAutoTask 已注释停用。
+   * 当前启用 Action_Init(action.c: action_all 完整比赛流程), MotorAutoTask 已停用。
    * 两者都调 Motor_XYZ, 不可同时运行。
-   * 切回 MotorAutoTask 时: 取消下方注释, 注释掉 Action_Init 即可。
-   * 须在 K230_Init 之后: action_test 任务会调 k230_write, 依赖 USART3 已就绪。 */
-  // Action_Init();
+   * 切回 MotorAutoTask 时: 取消下方 #if 0 改 1, 注释掉 Action_Init 即可。
+   * 须在 K230_Init 之后: action_all 任务会调 k230_write, 依赖 USART3 已就绪。 */
+  Action_Init();
 
- #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+ #if 0  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
    const osThreadAttr_t motorAutoTask_attributes = {
      .name = "MotorAutoTask",
     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
@@ -194,13 +194,13 @@ static void MotorAutoTask(void *argument)
   //                  0, 0.0f);          /* Z: 不动 */
   //  osDelay(9000);
 
-   //  goto_box(2);
+   //  goto_box(2, CLAW_WHITE);
    //  osDelay(10000);
-   //  goto_box(5);
+   //  goto_box(5, CLAW_BLACK);
    //  osDelay(10000);
-   //  goto_box(3);
+   //  goto_box(3, CLAW_WHITE);
    //  osDelay(10000);
-   //  goto_box(4);
+   //  goto_box(4, CLAW_WHITE);
    //  osDelay(10000);
 
    for (;;)
