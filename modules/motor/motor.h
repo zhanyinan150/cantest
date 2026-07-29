@@ -4,17 +4,22 @@
   * @brief   XYZ 三轴联动控制 (Modules层)
   ******************************************************************************
   * 机构配置 (与参考工程 crane_1 一致的 XYZ 起重机/分拣机构):
-  *   X轴(左右): 单 Emm_V5 步进,       ID=3,   CAN2 扩展帧
+  *   X轴(左右): 单 Emm_V5 步进,       ID=3,   UART5 (Emm_V5.c, 不走 CAN)
   *   Y轴(前后): 双 Emm_V5 步进同步驱动, ID=1,2, CAN2 扩展帧
   *   Z轴(升降): M2006 大疆电机, CAN1 标准帧, 见 modules/lift/lift.c
   *
-  * 移植自参考工程 motor.c::Motor_XYZ, 通信由 UART 改 CAN, 升降改用 lift 模块。
+  * 移植自参考工程 motor.c::Motor_XYZ: Y 轴通信由 UART 改 CAN2, X 轴仍走 UART5,
+  * 升降改用 lift 模块。X 与 Y 走不同总线, 故本文件对 X 所需的 Emm_V5_*(UART版)
+  * 函数作前向声明而不 include Emm_V5.h —— 其枚举与 Emm_V5_CAN.h 冲突, 详见
+  * motor.c 文件头。
   *
   * 机械参数(轮径/周长/减速比/每转脉冲)统一在 mech_params.h 集中配置,
   * 本文件只保留电气地址与运动参数(速度/加速度/超时等)。
   *
   * 依赖前提(须在 App_Init 中先完成):
-  *   1. Emm_V5_CAN_Init 已注册 {1,2,3} 三个步进地址
+  *   1. Emm_V5_CAN_Init 已注册 {1,2} 两个 CAN2 步进地址(Y1/Y2)。
+  *      X(3) 走 UART5 不经 bsp_can, 不在此注册 —— 多注册会让 CANRegister
+  *      重复检测 while(1) 卡死, 见 app_init.c 的同名说明。
   *   2. 三个步进已使能 (调用本模块 Motor_Init)
   *   3. Lift_Init 已完成 (Z轴 M2006 + LiftTask 运行)
   *   4. CAN1/CAN2 已 HAL_CAN_Start + 使能接收中断
@@ -31,10 +36,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ---- 步进电机地址 (Emm_V5 CAN2) ---- */
-/* X轴: 单电机 */
+/* ---- 步进电机地址 (Emm_V5) ---- */
+/* X轴: 单电机, 走 UART5 (Emm_V5.c), 不在 CAN2 上 */
 #define MOTOR_X_ADDR            3
-/* Y轴: 双电机同步, 两电机发相同位置命令 + 同步启动, 避免扭轴 */
+/* Y轴: 双电机同步(CAN2 扩展帧), 两电机发相同位置命令 + 同步启动, 避免扭轴 */
 #define MOTOR_Y_ADDR_1          1
 #define MOTOR_Y_ADDR_2          2
 
@@ -48,7 +53,8 @@
 
 /**
   * @brief  使能 X/Y 轴步进电机 (Z 轴由 Lift_Init 内部使能)
-  * @note   X(3) + Y双电机(1,2) 共三只步进, 需在 Emm_V5_CAN_Init 注册后调用
+  * @note   共三只步进: X(3) 经 UART5 直接发命令, Y1/Y2(1,2) 经 CAN2 同步使能。
+  *         须在 Emm_V5_CAN_Init 注册 {1,2} 且 MX_UART5_Init 完成之后调用。
   *         内部会注册 VOFA 命令, 串口发 mxyz 即可触发 Motor_XYZ
   */
 void Motor_Init(void);

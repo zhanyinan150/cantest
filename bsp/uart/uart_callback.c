@@ -105,6 +105,17 @@ static UART_DispatchSlot_t *s_find(USART_TypeDef *instance)
   */
 void UART_Callback_Init(void)
 {
+    /* VOFA 命令接收已停用: 这个队列从来没有消费者 —— 全工程唯一的
+     * osMessageQueueGet 在 bsp_log.c 取日志队列, s_cmd_queue 只有 Put 没有 Get;
+     * CommandTask 也不存在(motor.c 注释里已注明停用)。收进来的命令行只是堆到
+     * 队列满然后被丢掉, 却要为此每收 1 个字节进一次 USART1 中断做拼行。
+     *
+     * 本函数调用点必须保留: K230_Init 依赖它之后的回调分发去注册 USART3。
+     * USART1 的 NVIC 使能在 usart.c 的 MspInit(HAL_NVIC_EnableIRQ), 与这里的
+     * Receive_IT 无关, 所以关掉接收不影响 LogTask 的 DMA 发送完成回调。
+     *
+     * 恢复时: 打开下面 #if, 并补一个 CommandTask 消费 s_cmd_queue。 */
+#if 0
     if (s_cmd_queue == NULL) {
         s_cmd_queue = osMessageQueueNew(VOFA_CMD_QUEUE_DEPTH,
                                         VOFA_RX_BUF_SIZE,
@@ -113,6 +124,7 @@ void UART_Callback_Init(void)
         configASSERT(s_cmd_queue != NULL);
     }
     HAL_UART_Receive_IT(&huart1, &uart1_rx_byte, 1);
+#endif
 }
 
 osMessageQueueId_t UART_Callback_GetCmdQueue(void)

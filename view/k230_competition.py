@@ -51,6 +51,20 @@ CMD_START_FRONT = 0x03
 CMD_START_SIDE = 0x01
 CMD_ACK_CLOSE = 0x06
 K230_ACK = 0x0A
+K230_READY = 0x0B  # 就绪帧: 模型加载完成, 循环上报直到收到 STM32 第一条命令
+# RESYNC: 主机没收到本阶段回复, 要求重发上一次回复。必须与 CLOSE(0x06) 分开 ——
+# CLOSE 的含义是"数据已收到, 关摄像头进下一阶段", 若拿它兼作重同步信号, 本端
+# 收到就会误判成功而前进, 而主机其实还在重试本阶段, 两端从此错开一个阶段。
+# RESYNC 不改变任一端的阶段, 只补一次重传。
+CMD_RESYNC = 0x0C
+
+# 阶段号: 填在所有收发帧的 byte[1], 两端据此丢弃跨阶段的迟到帧。
+# 主机侧最要命的是 0x0A —— k230_ack_flag 是累加计数器, 上一阶段迟到的 ACK 会被
+# 下一阶段白白消费, 主机以为对端应答了而实际没有, 从此步步错位。
+PHASE_NONE = 0
+PHASE_BEAN = 1
+PHASE_FRONT = 2
+PHASE_SIDE = 3
 
 
 # ======================== 通信辅助函数 ========================
@@ -65,19 +79,59 @@ def verify_xor(frame):
     return calc_xor(frame[:7]) == frame[7]
 
 
+_cur_phase = PHASE_NONE   # 当前阶段号, 填进所有回帧的 byte[1]
+_last_reply = None        # 本阶段最后一次"结果性回复", 收到 RESYNC 时重发
+
+
+def set_phase(phase):
+    """进入新阶段: 更新阶段号, 并丢弃上一阶段的重传缓存。
+
+    缓存必须清 —— 否则新阶段还没产出结果时收到 RESYNC, 会把上一阶段的旧数据
+    帧重发出去, 主机拿着过期数据继续跑, 比收不到还糟。
+    """
+    global _cur_phase, _last_reply
+    _cur_phase = phase
+    _last_reply = None
+
+
 def send_frame(frame_type, payload):
+    """发数据帧, 并记为本阶段的"结果性回复"供 RESYNC 重传。"""
+    global _last_reply
     frame = bytearray(FRAME_LEN)
     frame[0] = frame_type
-    frame[1] = 0x00
+    frame[1] = _cur_phase
     for i in range(min(len(payload), 5)):
         frame[2 + i] = payload[i]
     frame[7] = calc_xor(frame[:7])
+    _last_reply = bytes(frame)
     uart.write(frame)
 
 
-def send_ack():
+def send_ack(remember=False):
+    """发 ACK 帧。
+
+    remember=True 只用于"识别完成"那个 ACK —— Phase2 不发数据帧, 那个 ACK 就是
+    本阶段的结果, 丢了必须能靠 RESYNC 补回来。
+    "命令收到"那个 ACK 不记: 主机等它超时会直接重发整条命令, 走的是另一条路。
+    """
+    global _last_reply
     frame = bytearray(FRAME_LEN)
     frame[0] = K230_ACK
+    frame[1] = _cur_phase
+    frame[7] = calc_xor(frame[:7])
+    if remember:
+        _last_reply = bytes(frame)
+    uart.write(frame)
+
+
+def send_ready():
+    """就绪帧 0x0B: 模型加载完成后循环发, STM32 收到才开始发命令。
+
+    不属于任何阶段, byte[1] 固定 0 —— 主机端对 0x0B 也不做阶段校验。
+    """
+    frame = bytearray(FRAME_LEN)
+    frame[0] = K230_READY
+    frame[1] = PHASE_NONE
     frame[7] = calc_xor(frame[:7])
     uart.write(frame)
 
@@ -125,28 +179,98 @@ def poll_frames():
     return frames
 
 
+# 已解析但尚未被消费的帧。必须有这一层 —— 原来 wait_* 里是
+#     for f in poll_frames():
+#         if f[0] == expected: return True
+# 一旦提前 return, poll_frames 本次取出的其余帧就永久丢失了, 连 WARN 都不打。
+# 而主机重试时一次读到多帧是常态(它会连发 RESYNC + 命令)。
+_pending = []
+_PENDING_MAX = 16
+
+
+def _pump():
+    """把 UART 里能解析的帧搬进 _pending; RESYNC 就地处理, 不入队。
+
+    RESYNC 放在这里统一处理, 于是任何调用 _pump 的等待循环(等命令、等 ACK、
+    甚至识别循环)都能响应主机的重传请求, 不用每处各写一遍。
+    """
+    for f in poll_frames():
+        if f[0] == CMD_RESYNC:
+            if _last_reply is not None:
+                uart.write(_last_reply)
+                print("  [RESYNC] resend last reply")
+            else:
+                # 本阶段还没产出结果(识别没跑完)。这里不能瞎发东西 —— 主机
+                # RESYNC 等不到回应会退回重发整条命令, 那条退路是通的。
+                print("  [RESYNC] nothing to resend yet")
+            continue
+        _pending.append(f)
+
+    # 防止异常情况下无限堆积。丢最旧的, 并打出来供事后对账。
+    while len(_pending) > _PENDING_MAX:
+        drop = _pending.pop(0)
+        print("  [WARN] pending overflow, drop 0x%02X" % drop[0])
+
+
+def _take(expected_cmd):
+    """取出第一个 byte[0]==expected_cmd 的帧, 其余按原序保留。无匹配返回 None。"""
+    for i in range(len(_pending)):
+        if _pending[i][0] == expected_cmd:
+            return _pending.pop(i)
+    return None
+
+
 def flush_rx():
     """清空接收缓冲, 用于阶段切换时丢弃上一阶段的残留/重发帧"""
-    global _rx_acc
+    global _rx_acc, _pending
     _rx_acc = bytearray()
+    _pending = []
     n = uart.any()
     if n:
         uart.read(n)
 
 
 def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
+    """等 STM32 发来指定命令。timeout_ms<=0 表示无限等。
+
+    无限等时必须留 os.exitpoint(), 否则 IDE 的停止按钮 / Ctrl-C 打断不了循环。
+    """
     start = time.ticks_ms()
     while True:
+        os.exitpoint()
         if sensor is not None:
             img = sensor.snapshot(chn=CAM_CHN_ID_0)
             Display.show_image(img, x=int((DISPLAY_WIDTH - picture_width) / 2),
                                y=int((DISPLAY_HEIGHT - picture_height) / 2))
             del img
-        for f in poll_frames():
-            if f[0] == expected_cmd:
-                return True
-            print("  [WARN] discard 0x%02X, waiting 0x%02X" % (f[0], expected_cmd))
+        _pump()
+        if _take(expected_cmd) is not None:
+            return True
         # ticks_diff 处理计数回绕, 直接相减在 ticks_ms 翻转时会得到负数
+        if timeout_ms > 0 and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
+            return False
+        time.sleep_ms(10)
+
+
+def wait_first_cmd_with_ready(expected_cmd, ready_period_ms=300, timeout_ms=0):
+    """等 STM32 第一条命令, 期间周期性发就绪帧 0x0B(握手)。
+
+    解决上电时序竞争: STM32 一上电就发命令, 而 K230 还在加载 kmodel(5~10s),
+    命令被 UART 硬件缓冲但程序没跑到接收, 主机 9s 内等不到 ACK 就判 FAILED。
+    改为 K230 加载完循环发 0x0B, STM32 先等就绪帧再发命令, 谁先启动都能对上。
+    timeout_ms<=0 表示无限等(比赛必须等到主机, 不能自行超时退出)。
+    """
+    start = time.ticks_ms()
+    last_ready = time.ticks_ms()
+    send_ready()                       # 立即发一次, 减少握手延迟
+    while True:
+        os.exitpoint()                 # 无限等也要能被 IDE 停止按钮打断
+        _pump()
+        if _take(expected_cmd) is not None:
+            return True
+        if time.ticks_diff(time.ticks_ms(), last_ready) >= ready_period_ms:
+            send_ready()
+            last_ready = time.ticks_ms()
         if timeout_ms > 0 and time.ticks_diff(time.ticks_ms(), start) > timeout_ms:
             return False
         time.sleep_ms(10)
@@ -155,7 +279,7 @@ def wait_for_cmd(expected_cmd, sensor=None, timeout_ms=30000):
 # ======================== YOLOv11 检测类 ========================
 class YOLOv11App(AIBase):
     def __init__(self, kmodel_path, model_input_size,
-                 confidence_threshold=0.5, nms_threshold=0.45,
+                 confidence_threshold=0.3, nms_threshold=0.45,
                  rgb888p_size=[640, 360], display_size=[800, 480], debug_mode=0):
         super().__init__(kmodel_path, model_input_size, rgb888p_size, debug_mode)
         self.class_id = CLASS_ID
@@ -179,7 +303,11 @@ class YOLOv11App(AIBase):
         with ScopedTiming("set preprocess config", self.debug_mode > 0):
             ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size
             top, bottom, left, right = self.get_padding_param()
-            self.ai2d.pad([top, bottom, left, right], 0, [104, 117, 123])
+            # paddings 必须是 8 个值: NCHW 四个维度各给前后两侧, 只在 H/W 上填充。
+            # 曾经这里只传 4 个 [top,bottom,left,right], 于是 bottom(=140) 被当成
+            # N(batch) 维的后侧填充, H/W 一点没补 —— 送进 KPU 的根本不是 letterbox
+            # 后的图。而且 ai2d 不报错、不打日志, 表现就是一个框都检不出来。
+            self.ai2d.pad([0, 0, 0, 0, top, bottom, left, right], 0, [104, 117, 123])
             self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
             self.ai2d.build([1, 3, ai2d_input_size[1], ai2d_input_size[0]],
                             [1, 3, self.model_input_size[1], self.model_input_size[0]])
@@ -374,6 +502,9 @@ def recognize_beans(yolo_det, sensor, target_count=3, stable_frames=3,
     start = time.ticks_ms()
     while True:
         os.exitpoint()
+        # 识别期间也把 UART 搬空: 一是响应主机的 RESYNC 重传请求, 二是防止
+        # 帧在缓冲里堆到溢出。原来这三个循环最长 20s 完全不读串口。
+        _pump()
         img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
         img_ai = sensor.snapshot(chn=CAM_CHN_ID_2)
         dets = yolo_det.run(img_ai)
@@ -420,6 +551,9 @@ def recognize_front_numbers(yolo_det, sensor, target_count=3, stable_frames=3,
     start = time.ticks_ms()
     while True:
         os.exitpoint()
+        # 识别期间也把 UART 搬空: 一是响应主机的 RESYNC 重传请求, 二是防止
+        # 帧在缓冲里堆到溢出。原来这三个循环最长 20s 完全不读串口。
+        _pump()
         img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
         img_ai = sensor.snapshot(chn=CAM_CHN_ID_2)
         dets = yolo_det.run(img_ai)
@@ -465,6 +599,9 @@ def recognize_side_number(yolo_det, sensor, stable_frames=3,
     start = time.ticks_ms()
     while True:
         os.exitpoint()
+        # 识别期间也把 UART 搬空: 一是响应主机的 RESYNC 重传请求, 二是防止
+        # 帧在缓冲里堆到溢出。原来这三个循环最长 20s 完全不读串口。
+        _pump()
         img_display = sensor.snapshot(chn=CAM_CHN_ID_0)
         img_ai = sensor.snapshot(chn=CAM_CHN_ID_2)
         dets = yolo_det.run(img_ai)
@@ -536,6 +673,21 @@ def infer_fifth(known_nums):
     return 0x01
 
 
+# ======================== 显示辅助函数 ========================
+def show_boot_screen():
+    """开机欢迎界面: 标题 + 等待提示, 停留到收到 STM32 第一个命令。
+
+    OSD 层直接绘制文字, 无需摄像头图像。Display 已在主函数开头 init。
+    """
+    osd = image.Image(DISPLAY_WIDTH, DISPLAY_HEIGHT, image.ARGB8888)
+    osd.clear()
+    osd.draw_string_advanced(200, 160, 48, "Vision System", color=(255, 0, 255, 255))
+    osd.draw_string_advanced(220, 260, 32, "Waiting for start...", color=(255, 255, 255, 255))
+    Display.show_image(osd, 0, 0, Display.LAYER_OSD1)
+    del osd
+    gc.collect()
+
+
 # ======================== 主函数 ========================
 if __name__ == "__main__":
     clock = time.clock()
@@ -544,6 +696,8 @@ if __name__ == "__main__":
     front_numbers = None
 
     try:
+        os.exitpoint(os.EXITPOINT_ENABLE)
+        nn.shrink_memory_pool()
         Display.init(Display.ST7701, width=800, height=480, to_ide=True)
         MediaManager.init()
         time.sleep_ms(200)
@@ -553,11 +707,14 @@ if __name__ == "__main__":
                               rgb888p_size=[640, 360], display_size=[800, 480])
         yolo_det.config_preprocess()
 
-        # ============ Phase 1: 等待 STM32 命令 -> 豆子识别 (Camera 2) ============
-        print("========== Phase 1: Waiting for LOOK_BEAN (0x02) ==========")
-        if not wait_for_cmd(CMD_START_BEAN, timeout_ms=30000):
-            print("Phase 1 command timeout!")
-            raise Exception("P1 timeout")
+        # 开机界面: 标题 + 等待提示, 停留到收到 STM32 第一个命令
+        show_boot_screen()
+
+        # ============ Phase 1: 就绪握手 -> 等命令 -> 豆子识别 (Camera 2) ============
+        # 模型已加载完成, 循环发就绪帧 0x0B 直到 STM32 发来 LOOK_BEAN
+        print("========== Phase 1: Ready handshake, waiting LOOK_BEAN (0x02) ==========")
+        set_phase(PHASE_BEAN)
+        wait_first_cmd_with_ready(CMD_START_BEAN)
         print("Command received, sending ACK")
         send_ack()
 
@@ -583,9 +740,14 @@ if __name__ == "__main__":
         # 清掉上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
         flush_rx()
         print("========== Phase 2: Waiting for LOOK_NUMBER (0x03) ==========")
-        if not wait_for_cmd(CMD_START_FRONT, timeout_ms=30000):
-            print("Phase 2 command timeout!")
-            raise Exception("P2 timeout")
+        set_phase(PHASE_FRONT)
+        # 无限等: STM32 从 P1 结束到发 LOOK_NUMBER, 中间要跑完抓豆(约38s)+越障
+        # (约12s)共 50s 左右, 远超原来的 30s 上限。到点 raise 会把整个脚本带走,
+        # 之后 P2/P3 必然零应答。比赛节奏由主机主导, K230 不能自行判超时退出。
+        # 用带心跳的版本: 等命令期间每 300ms 发一个就绪帧 0x0B, 主机据此知道
+        # K230 还活着。这段等待长达 50s(主机在跑抓豆+越障), 没有心跳的话主机
+        # 完全分不清"K230 挂了"和"主机自己还没走到发命令那一步"。
+        wait_first_cmd_with_ready(CMD_START_FRONT)
         print("Command received, sending ACK")
         send_ack()
 
@@ -596,8 +758,10 @@ if __name__ == "__main__":
         front_numbers = recognize_front_numbers(yolo_det, sensor)
         print(f"Front numbers stored: {['0x%02X' % b for b in front_numbers]}")
 
-        # 识别完成, 发送 ACK 通知 STM32 (不发数据帧, 正面数字仅 K230 内部使用)
-        send_ack()
+        # 识别完成, 发送 ACK 通知 STM32 (不发数据帧, 正面数字仅 K230 内部使用)。
+        # remember=True: 本阶段没有数据帧, 这个 ACK 就是结果本身, 丢了必须能靠
+        # 主机的 RESYNC 重传补回来, 否则只能整条命令重发(重跑一次 20s 识别)。
+        send_ack(remember=True)
         print("Front number done, ACK sent")
 
         # 等待 STM32 应答
@@ -612,9 +776,9 @@ if __name__ == "__main__":
         # 清掉上一阶段 STM32 重试遗留的帧, 否则会被误判成本阶段的命令
         flush_rx()
         print("========== Phase 3: Waiting for LOOK_SIDE (0x01) ==========")
-        if not wait_for_cmd(CMD_START_SIDE, timeout_ms=30000):
-            print("Phase 3 command timeout!")
-            raise Exception("P3 timeout")
+        set_phase(PHASE_SIDE)
+        # 同 Phase 2: 不设上限 + 心跳。主机在 P2 之后还要走一段行程才发 LOOK_SIDE。
+        wait_first_cmd_with_ready(CMD_START_SIDE)
         print("Command received, sending ACK")
         send_ack()
 

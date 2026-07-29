@@ -36,6 +36,21 @@
 #define K230_CMD_LOOK_NUMBER    3
 #define K230_CMD_LOOK_SIDE      1
 #define K230_CMD_CLOSE          6
+/* RESYNC: 主机没收到本阶段回复, 要求 K230 重发上一次回复(数据帧/识别完成ACK)。
+ * 必须与 CLOSE 分开 —— CLOSE 的含义是"数据已收到, 关摄像头进下一阶段", 若拿它
+ * 兼作重同步信号, K230 在等 CLOSE 时收到就会误判本阶段成功并前进, 而主机其实
+ * 还在重试本阶段, 两端就此错开。RESYNC 不改变任一端的阶段。 */
+#define K230_CMD_RESYNC         0x0C
+
+/* ---- 阶段号 (填在 byte[1], 两端据此丢弃跨阶段的迟到帧) ----
+ * 关键作用在 k230_ack_flag: 它是累加计数器, 上一阶段迟到的 ACK 会被下一阶段
+ * 白白消费掉, 导致主机以为对端已应答而实际没有。带上阶段号即可原地丢弃。
+ * 0 = 不属于任何阶段(就绪帧 0x0B), 收到 0 一律不校验 —— 兼容未升级的 K230
+ * 脚本(旧版 byte[1] 恒为 0), 退化成与升级前完全一致的行为, 不会锁死通讯。 */
+#define K230_PHASE_NONE         0
+#define K230_PHASE_BEAN         1
+#define K230_PHASE_FRONT        2
+#define K230_PHASE_SIDE         3
 
 /* ---- 豆子颜色编码 (K230 返回) ---- */
 #define BEAN_GREEN   0x06   /* 绿豆 */
@@ -69,12 +84,16 @@ extern __IO uint8_t count;
 /* K230 ACK (0x0A) 计数器: 每收到一帧 0x0A 自增, 消费后自减或清零。
  * 用计数器而非布尔标志, 避免 Phase2 连发两个 ACK 时丢掉第二个。 */
 extern __IO uint8_t k230_ack_flag;
+/* K230 就绪标志(1=模型加载完成): 上电握手用, 主机等到此标志才发 LOOK_BEAN */
+extern __IO uint8_t k230_ready_flag;
 
 /* ---- 接收统计(诊断用, 调试器观察是否丢帧) ---- */
 extern __IO uint32_t k230_rx_frames;     /* 成功解析的整帧数 */
 extern __IO uint32_t k230_rx_badxor;     /* XOR 校验失败帧数 */
 extern __IO uint32_t k230_rx_badlen;     /* 长度非 8 的残帧数 */
 extern __IO uint32_t k230_rx_rearm_err;  /* 重新武装 DMA 失败次数 */
+extern __IO uint32_t k230_rx_badphase;   /* 阶段号不符被丢弃的帧数(跨阶段迟到帧) */
+extern __IO uint32_t k230_last_rx_tick;  /* 最近一次收到合法帧的 tick, 存活检测用 */
 
 /* ---- K230 触发的动作组 (在 action.c 中实现, 此处仅声明) ----
  * Data_yinshe 根据 key(豆子颜色) 查 number_position 得位置 1~5, 调 Action_1..5
@@ -135,8 +154,27 @@ int Data_yinshe(uint8_t key);
 
 /* ---- K230 通讯超时/重试 ---- */
 #define K230_ACK_TIMEOUT_MS      3000    /* 等对端 ACK */
-#define K230_DATA_TIMEOUT_MS     15000   /* 等识别结果(含推理耗时) */
+/* 必须大于 K230 端 RECOGNIZE_TIMEOUT_MS(20s) + 摄像头启动 200ms + 余量。
+ * 小于它就会出现 5s 错位窗口: K230 还在识别循环里没出结果, 主机已判超时并发
+ * CLOSE 重同步 + 重发命令; K230 识别完发出的是数据帧而不是 ACK, 主机不认继续
+ * 等 ACK 超时, 而 K230 转去等 CLOSE 时正好读到主机重同步发的那个 0x06, 误判
+ * 本阶段成功并进入下一阶段 —— 两端就此错开一个阶段。 */
+#define K230_DATA_TIMEOUT_MS     25000   /* 等识别结果(含推理耗时) */
 #define K230_RETRY_MAX           3       /* 重试次数, 只在一层生效, 勿嵌套 */
+#define K230_READY_TIMEOUT_MS    30000   /* 等 K230 就绪(0x0B): 模型加载可能很慢 */
+/* 数据超时后先发 RESYNC 让对端重发一帧(便宜), 失败才退回重发整条命令(贵:
+ * K230 要重开摄像头重跑一次识别, 20s 起步)。这个窗口只等一帧重传, 给 3s 够了。 */
+#define K230_RESYNC_TIMEOUT_MS   3000
+/* 对端静默多久就在日志里示警。用于区分"K230 挂了"和"识别慢", 只打印不改流程。 */
+#define K230_SILENT_WARN_MS      3000
+
+/**
+  * @brief  上电握手: 阻塞等 K230 就绪(0x0B), 超时也放行
+  * @note   必须在 k230_phase1_bean 之前调用: K230 加载模型慢, 主机先等就绪帧
+  *         再发命令, 否则命令会在 K230 就绪前发出而被漏掉。
+  * @retval 0=收到就绪帧, -1=超时(仍可继续)
+  */
+int k230_wait_ready(void);
 
 /**
   * @brief  Phase1: 豆子颜色识别, 结果填入 bean_color[3]

@@ -44,7 +44,9 @@ static void Lift_UpdateCurrentSpeed(void);
 static void Lift_ControlMotors(void);
 static void Lift_SetTarget(float target_displacement);
 bool Lift_WaitUntilAtTarget(uint32_t timeout_ms);
-static uint8_t lift_telemetry_getter(float *out, uint8_t max);  /* 遥测波形通道 */
+#if 0
+static uint8_t lift_telemetry_getter(float *out, uint8_t max);  /* 遥测波形通道(已停用) */
+#endif
 
 /**
  * @brief 统一的目标位移设置入口(带限幅)
@@ -137,7 +139,10 @@ int Lift_Init(void)
     }
 
     Lift_RegisterCommands();  /* 注册升降 VOFA 命令到 bsp/cmd */
-    configASSERT(Telemetry_Register("lift", lift_telemetry_getter) == 0);
+    /* 遥测已停用: Telemetry_SendFrame 全工程零调用点, 没有 TelemetryTask 周期
+     * 发送, 注册进去的 getter 一次也不会被调, JustFloat 波形一帧都发不出。
+     * 恢复时: 打开本行 + 下方 getter 的 #if, 并补一个 TelemetryTask。 */
+    /* configASSERT(Telemetry_Register("lift", lift_telemetry_getter) == 0); */
     return 0;
 }
 
@@ -441,7 +446,10 @@ static void cmd_skd(const char *arg) { cmd_set_pid_kd(LIFT_LOOP_SPEED, arg); }
 
 /* ===== 遥测波形通道 =====
  * 通道: 目标位移(cm) / 当前位移(cm) / 电机角速度(度/秒) / 电机电流
+ * 随 Lift_Init 里的 Telemetry_Register 一起停用: 无 TelemetryTask 调用它,
+ * 留着不包会报 #177-D declared but never referenced。通道定义一个不丢。
  */
+#if 0
 static uint8_t lift_telemetry_getter(float *out, uint8_t max)
 {
     if (max < 4 || lift_motor == NULL)
@@ -452,6 +460,7 @@ static uint8_t lift_telemetry_getter(float *out, uint8_t max)
     out[3] = (float)lift_motor->measure.real_current;
     return 4;
 }
+#endif /* lift_telemetry_getter 停用 */
 
 void Lift_RegisterCommands(void)
 {
