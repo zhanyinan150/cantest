@@ -1844,6 +1844,16 @@
         <Group>
           <GroupName>::CMSIS</GroupName>
         </Group>
+        <Group>
+          <GroupName>Docs</GroupName>
+          <Files>
+            <File>
+              <FileName>蓝安的代码内容.md</FileName>
+              <FileType>5</FileType>
+              <FilePath>../蓝安的代码内容.md</FilePath>
+            </File>
+          </Files>
+        </Group>
       </Groups>
     </Target>
   </Targets>

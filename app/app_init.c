@@ -23,7 +23,7 @@
 #include "lift.h"
 #include "Emm_V5_CAN.h"
 #include "motor.h"       /* Motor_Init / Motor_XYZ / mxyz 命令 (XYZ起重机机构) */
-#include "action.h"      /* Action_Init: action_1 动作序列任务 */
+#include "action.h"      /* Action_Init: action_test 动作序列任务 */
 #include "servo.h"       /* runActionGroup: 舵机动作组播放 */
 #include "K230.h"        /* K230_Init: 视觉模块 USART3 通信 */
 #include "uart_callback.h"
@@ -114,7 +114,7 @@ void App_Init(void)
    * 当前启用 Action_Init(action.c: 视觉三阶段 + 抓豆放箱), MotorAutoTask 已注释停用。
    * 两者都调 Motor_XYZ, 不可同时运行。
    * 切回 MotorAutoTask 时: 取消下方注释, 注释掉 Action_Init 即可。
-   * 须在 K230_Init 之后: action_1 任务会调 k230_write, 依赖 USART3 已就绪。 */
+   * 须在 K230_Init 之后: action_test 任务会调 k230_write, 依赖 USART3 已就绪。 */
   // Action_Init();
 
  #if 1  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
@@ -171,20 +171,23 @@ static void MotorAutoTask(void *argument)
 
   //  runActionGroup(1,1);
 
-    // 起始点到抓左边豆子test
-    (void)Motor_XYZ(0, 300, 30, 93.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
-                    1, 100, 20, 0,   /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                    0, 25.0f);         /* Z: dir=0(上), 25cm */
-      osDelay(12000);
-      
-      (void)Motor_XYZ(1, 300, 30, 93.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
-                      1, 100, 20, 0,     /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                      0, 0);         /* Z: dir=0(上), 25cm */
-      osDelay(12000);
+   (void)Motor_XYZ(0, 300, 30, 65.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
+                   1, 100, 20, 0,       /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
+                   0, 35.0f);           /* Z: dir=0(上), 25cm */
+   osDelay(2000);
 
-      for (;;)
-      {
-        osDelay(1000);
-      }
+   //  goto_box(2);
+   //  osDelay(10000);
+   //  goto_box(5);
+   //  osDelay(10000);
+   //  goto_box(3);
+   //  osDelay(10000);
+   //  goto_box(4);
+   //  osDelay(10000);
+
+   for (;;)
+   {
+     osDelay(1000);
+   }
 }
 #endif /* MotorAutoTask 停用 */
