@@ -10,7 +10,7 @@ from media.sensor import *
 from media.display import *
 from libs.Utils import *
 
-CAMERA_ID = 2
+CAMERA_ID = 0
 KMODEL_PATH = "/sdcard/best.kmodel"
 
 OUT_RGB888P_WIDTH = ALIGN_UP(640, 16)
@@ -56,7 +56,9 @@ class YOLOv11App(AIBase):
         with ScopedTiming("set preprocess config", self.debug_mode > 0):
             ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size
             top, bottom, left, right = self.get_padding_param()
-            self.ai2d.pad([top, bottom, left, right], 0, [104, 117, 123])
+            # 8 个值: NCHW 各维度前后两侧, 只在 H/W 填充。少传成 4 个会让 bottom
+            # 落到 batch 维上, H/W 没补 -> 模型收到的不是 letterbox 图, 检不出框。
+            self.ai2d.pad([0, 0, 0, 0, top, bottom, left, right], 0, [104, 117, 123])
             self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
             self.ai2d.build([1, 3, ai2d_input_size[1], ai2d_input_size[0]], [1, 3, self.model_input_size[1], self.model_input_size[0]])
 
@@ -148,7 +150,7 @@ class YOLOv11App(AIBase):
         self.pad_top = top
         self.pad_left = left
         self.scale_x = self.rgb888p_size[0] / new_w if new_w > 0 else 1.0
-        self.scale_y = self.rgb888p_size[1] / new_h if new_h > 0 else 1.0
+        self.scale_y = self.rgb888p_size[1] / new_h if new_w > 0 else 1.0
         return top, bottom, left, right
 
     def preprocess(self, input_np):
@@ -200,6 +202,8 @@ class YOLOv11App(AIBase):
 
     def config_camera(self, camera_id):
         sensor = Sensor(id=camera_id)
+        # sensor.reset() 在 v1.7 虽然打 "deprecated function" 警告, 但 k230_competition.py
+        # 一直在调且能跑。不调的话 sensor 状态没清干净, vicap init 可能失败。
         sensor.reset()
         sensor.set_framesize(width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT, chn=CAM_CHN_ID_0)
         sensor.set_pixformat(Sensor.RGB565, chn=CAM_CHN_ID_0)
@@ -216,7 +220,7 @@ if __name__ == "__main__":
     rgb888p_size = [640, 360]
     display_size = [800, 480]
 
-    confidence_threshold = 0.5
+    confidence_threshold = 0.2
     nms_threshold = 0.45
     anchors = None
 
@@ -227,6 +231,21 @@ if __name__ == "__main__":
         print(f"错误: 模型文件不存在 {KMODEL_PATH}, 请先放入SD卡根目录")
         raise
 
+    # 正确初始化顺序（来自仓库已知能跑的 k230_competition.py）：
+    #  1. os.exitpoint 使能 IDE 中断
+    #  2. nn.shrink_memory_pool()  释放 KPU 内存给 VB 池用（关键！）
+    #  3. Display.init()           先初始化显示
+    #  4. MediaManager.init()       再初始化 VB 池
+    #  5. 配置 sensor 通道          （config_camera）
+    #  6. sensor.run()              最后启动摄像头
+
+    os.exitpoint(os.EXITPOINT_ENABLE)
+    nn.shrink_memory_pool()
+
+    Display.init(Display.ST7701, width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT, to_ide=True)
+    MediaManager.init()
+    time.sleep_ms(200)
+
     yolo_det = YOLOv11App(KMODEL_PATH, model_input_size=[320, 320], anchors=anchors,
                           confidence_threshold=confidence_threshold, nms_threshold=nms_threshold,
                           rgb888p_size=rgb888p_size, display_size=display_size, debug_mode=0)
@@ -234,12 +253,7 @@ if __name__ == "__main__":
 
     sensor = None
     try:
-        Display.init(Display.ST7701, width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT, to_ide=True)
-        MediaManager.init()
-        time.sleep_ms(200)
-
         sensor = yolo_det.config_camera(CAMERA_ID)
-        time.sleep_ms(200)
         sensor.run()
         time.sleep_ms(200)
         print(f"===== cam{CAMERA_ID} + {KMODEL_PATH} 推理测试 =====")

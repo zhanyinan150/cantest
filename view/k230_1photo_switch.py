@@ -1,4 +1,5 @@
 import os, gc, time
+import nncase_runtime as nn
 from media.media import *
 from media.sensor import *
 from media.display import *
@@ -123,6 +124,8 @@ if __name__ == "__main__":
     ensure_photo_dir()
     button = Button(btn)
 
+    os.exitpoint(os.EXITPOINT_ENABLE)
+    nn.shrink_memory_pool()
     Display.init(Display.ST7701, width=DISPLAY_WIDTH, height=DISPLAY_HEIGHT, to_ide=True)
     MediaManager.init()
     time.sleep_ms(200)
@@ -209,4 +212,8 @@ if __name__ == "__main__":
             MediaManager.deinit()
         except Exception as e:
             print(f"MediaManager.deinit: {e}")
+        try:
+            nn.shrink_memory_pool()
+        except Exception as e:
+            print(f"shrink_memory_pool: {e}")
         gc.collect()

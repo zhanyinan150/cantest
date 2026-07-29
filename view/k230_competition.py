@@ -303,7 +303,11 @@ class YOLOv11App(AIBase):
         with ScopedTiming("set preprocess config", self.debug_mode > 0):
             ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size
             top, bottom, left, right = self.get_padding_param()
-            self.ai2d.pad([top, bottom, left, right], 0, [104, 117, 123])
+            # paddings 必须是 8 个值: NCHW 四个维度各给前后两侧, 只在 H/W 上填充。
+            # 曾经这里只传 4 个 [top,bottom,left,right], 于是 bottom(=140) 被当成
+            # N(batch) 维的后侧填充, H/W 一点没补 —— 送进 KPU 的根本不是 letterbox
+            # 后的图。而且 ai2d 不报错、不打日志, 表现就是一个框都检不出来。
+            self.ai2d.pad([0, 0, 0, 0, top, bottom, left, right], 0, [104, 117, 123])
             self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
             self.ai2d.build([1, 3, ai2d_input_size[1], ai2d_input_size[0]],
                             [1, 3, self.model_input_size[1], self.model_input_size[0]])
@@ -692,6 +696,8 @@ if __name__ == "__main__":
     front_numbers = None
 
     try:
+        os.exitpoint(os.EXITPOINT_ENABLE)
+        nn.shrink_memory_pool()
         Display.init(Display.ST7701, width=800, height=480, to_ide=True)
         MediaManager.init()
         time.sleep_ms(200)

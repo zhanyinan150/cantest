@@ -98,7 +98,9 @@ class YOLOv11App(AIBase):
         with ScopedTiming("set preprocess config", self.debug_mode > 0):
             ai2d_input_size = input_image_size if input_image_size else self.rgb888p_size
             top, bottom, left, right = self.get_padding_param()
-            self.ai2d.pad([top, bottom, left, right], 0, [104, 117, 123])
+            # 8 个值: NCHW 各维度前后两侧, 只在 H/W 填充。少传成 4 个会让 bottom
+            # 落到 batch 维上, H/W 没补 -> 模型收到的不是 letterbox 图, 检不出框。
+            self.ai2d.pad([0, 0, 0, 0, top, bottom, left, right], 0, [104, 117, 123])
             self.ai2d.resize(nn.interp_method.tf_bilinear, nn.interp_mode.half_pixel)
             self.ai2d.build([1, 3, ai2d_input_size[1], ai2d_input_size[0]], [1, 3, self.model_input_size[1], self.model_input_size[0]])
 
@@ -456,6 +458,8 @@ if __name__ == "__main__":
             print(f"错误：模型文件不存在 {kmodel_path}")
             raise
 
+    os.exitpoint(os.EXITPOINT_ENABLE)
+    nn.shrink_memory_pool()
     Display.init(Display.ST7701, width=800, height=480, to_ide=True)
     MediaManager.init()
     time.sleep_ms(200)
