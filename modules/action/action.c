@@ -44,7 +44,9 @@
 
 /* ---- 内部函数 ---- */
 static void action_test(void *argument);
+static void action_all(void *argument);
 static void action_douzi_first(void);
+static void action_douzi_secend(void);
 static void action_gouto_xiangzi_first(void);
 static void action_gouto_xiangzi_secend(void);
 void goto_box(uint8_t target_box);
@@ -138,6 +140,14 @@ static void place_beans(void)
 
 */
 
+/* ===== 箱子间X轴移动 (以第4个箱子为原点) ===== */
+/* 以第4个箱子为坐标原点(0), 左为负, 右为正, 单位cm。
+ *   箱子1: -93  箱子2: -73  箱子3: -35  箱子4: 0  箱子5: +25
+ * 箱子编号1~5从左到右, 与 K230 number_position 一致。
+ * 方向: dir=0(左/远离墙), dir=1(右/靠近墙)。 */
+static const float box_x_coord[6] = {0, -93.0f, -73.0f, -35.0f, 0.0f, 25.0f};
+/* 当前所在箱子编号, action_gouto_xiangzi 结束后应为4 */
+static uint8_t s_current_box = 4;
 
 static void action_all(void *argument)
 {
@@ -151,7 +161,7 @@ static void action_all(void *argument)
 
     action_douzi_first(); /* 抓豆子, 动作截止到抓完豆子已完成升降结构移到右边 */
 
-    action_gouto_xiangzi(); /* 放箱子, 内含 Phase2(正面数字) + Phase3(侧面数字) */
+    action_gouto_xiangzi_first(); /* 放箱子, 内含 Phase2(正面数字) + Phase3(侧面数字) */
 
     place_beans(); /* 分拣决策: 颜色 -> 箱位 */
 
@@ -169,7 +179,7 @@ static void action_all(void *argument)
 
     // 第二次放豆子（右边豆子）
     action_gouto_xiangzi_secend();
-    goto_box(Data_yinshe(bean_color[3])); // 走到右边豆子映射箱子位置
+    goto_box(Data_yinshe(bean_color[2])); // 走到右边豆子映射箱子位置
 }
 
     /**
@@ -190,7 +200,7 @@ static void action_all(void *argument)
 
         action_douzi_first(); /* 抓豆子, 动作截止到抓完豆子已完成升降结构移到右边 */
 
-        action_gouto_xiangzi(); /* 放箱子, 内含 Phase2(正面数字) + Phase3(侧面数字) */
+        action_gouto_xiangzi_first(); /* 放箱子, 内含 Phase2(正面数字) + Phase3(侧面数字) */
 
         place_beans(); /* 分拣决策: 颜色 -> 箱位 */
 
@@ -281,7 +291,7 @@ static void action_all(void *argument)
 
         /* 准备去放箱子: X-60 */
         dbg("[ACT] 7/7 move toward box (X-60)\r\n");
-        (void)Motor_XYZ(0, 400, 50, 65.0f, /* X: dir=0(左), 300rpm, acc=20, 65cm */
+        (void)Motor_XYZ(0, 400, 50, 72.0f, /* X: dir=0(左), 300rpm, acc=20, 72cm */
                         1, 100, 20, 0,     /* Y: 不动 */
                         0, 0.0f);          /* Z: 不动 */
         osDelay(9000);
@@ -292,7 +302,8 @@ static void action_all(void *argument)
     static void action_douzi_secend(void)
     {
         //从箱子回去第二次抓豆子
-        (void)Motor_XYZ(0, 400, 50, 65.0f, /* X: dir=0(左), 300rpm, acc=20, 65cm */
+        (void)Motor_XYZ(0, 400, 50, 77.0f, /* X: dir=0(左), 300rpm, acc=20, 77cm *///65
+
                         1, 100, 20, 315.0f,     /* Y: 不动 */
                         0, 0.0f);          /* Z: 不动 */
         osDelay(15000);
@@ -335,7 +346,7 @@ static void action_all(void *argument)
 
         /* 豆子到箱子障碍物动作2 */
         dbg("[ACT] obstacle step2 (X+65 Y-160)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 65.0f, /* X: dir=1(右), 300rpm, acc=20, 65cm */
+        (void)Motor_XYZ(1, 400, 50, 77.0f, /* X: dir=1(右), 300rpm, acc=20, 77cm */
                         0, 50, 20, 160.0f, /* Y: dir=0(后), 50rpm, acc=20, 160cm */
                         0, 0.0f);          /* Z: 不动 */
         osDelay(6000);
@@ -383,15 +394,6 @@ static void action_all(void *argument)
 
         dbg("[ACT] === place to box (no vision) done ===\r\n");
     }
-
-    /* ===== 箱子间X轴移动 (以第4个箱子为原点) ===== */
-    /* 以第4个箱子为坐标原点(0), 左为负, 右为正, 单位cm。
-     *   箱子1: -93  箱子2: -73  箱子3: -35  箱子4: 0  箱子5: +25
-     * 箱子编号1~5从左到右, 与 K230 number_position 一致。
-     * 方向: dir=0(左/远离墙), dir=1(右/靠近墙)。 */
-    static const float box_x_coord[6] = {0, -93.0f, -73.0f, -35.0f, 0.0f, 25.0f};
-    /* 当前所在箱子编号, action_gouto_xiangzi 结束后应为4 */
-    static uint8_t s_current_box = 4;
 
     /**
      * @brief  从当前箱子直线移动X轴到目标箱子 (Y/Z不动)

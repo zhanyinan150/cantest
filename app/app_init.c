@@ -171,10 +171,28 @@ static void MotorAutoTask(void *argument)
 
   //  runActionGroup(1,1);
 
-   (void)Motor_XYZ(0, 300, 30, 65.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
+   (void)Motor_XYZ(1, 300, 30, 77.0f, /* X: dir=0(左), 300rpm, acc=30, 77cm */
                    1, 100, 20, 0,       /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                   0, 35.0f);           /* Z: dir=0(上), 25cm */
+                   0, 35.0f);           /* Z: dir=0(上), 35cm */
    osDelay(2000);
+
+
+
+   /* 抓中间豆子: X-20.5 */
+  //  (void)Motor_XYZ(0, 400, 50, 20.5f, /* X: dir=0(左), 300rpm, acc=20, 20.5cm */
+  //                  1, 100, 20, 0,     /* Y: 不动 */
+  //                  0, 35.0f);          /* Z: dir=0(上), 35cm */
+  //  osDelay(4000);
+
+
+
+
+
+   /* 准备去放箱子: X-60 */
+  //  (void)Motor_XYZ(0, 400, 50, 72.0f, /* X: dir=0(左), 300rpm, acc=20, 72cm */
+  //                  1, 100, 20, 0,     /* Y: 不动 */
+  //                  0, 0.0f);          /* Z: 不动 */
+  //  osDelay(9000);
 
    //  goto_box(2);
    //  osDelay(10000);
