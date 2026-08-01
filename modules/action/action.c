@@ -1,26 +1,30 @@
 /**
   ******************************************************************************
   * @file    action.c
-  * @brief   动作序列(抓豆子->放箱子) + K230 三阶段通讯调用(主机)
+  * @brief   动作序列(单爪抓豆子->放箱子) + K230 三阶段通讯调用(主机)
   ******************************************************************************
-  * action_test 任务: 上电后自动跑完整比赛流程, 不依赖串口命令。
+  * action_all 任务: 上电后自动跑完整比赛流程, 不依赖串口命令。
   *
-  * K230 三阶段通讯协议层(发命令->等ACK->等数据->回ACK + 超时重试)已移至
-  * modules/k230/K230.c, 由 k230_phase1_bean / k230_phase2_front / k230_phase3_side
-  * 三个函数封装, 本文件直接调用。协议细节见 K230.h 文件头注释。
+  * 单爪结构: 只用黑爪, 分3次抓豆(左->中->右), 每次抓完去箱子放豆。
+  *   - 只有第1次抓豆前做 Phase1(豆子识别)
+  *   - 只有第1次放箱时做 Phase2/Phase3(箱子识别)
   *
-  * 流程编排:
-  *   Phase1(豆子识别) -> action_douzi_first(抓豆) -> action_gouto_xiangzi(放箱,
-  *   内含 Phase2/Phase3) -> Data_yinshe 分拣决策
+  * 豆子X轴坐标(以初始点为原点, 靠墙dir=1为正方向):
+  *   左豆: +35    中豆: +14.5    右豆: -57.5
+  *   左豆->中豆: dir=0(远离墙) 20.5cm
+  *   中豆->右豆: dir=0(远离墙) 24cm
   *
+  * 每次抓完豆后都先走到右豆位置(X=-57.5)再去放箱子:
+  *   左豆->右豆: dir=0 92.5cm  中豆->右豆: dir=0 24cm  右豆: 已在位
+  *   右豆->4号箱: dir=1 82cm (action_gouto_xiangzi_first/secend)
+  *
+  * 舵机动作组:
+  *   左/右豆: 组15(准备) -> Z降 -> 组16(抓) -> Z升
+  *   中豆:    组3(准备)  -> Z降 -> 组4(抓)  -> Z升
+  *   抓完过渡: 组12
+  *
+  * K230 三阶段通讯协议层已移至 modules/k230/K230.c。
   * Motor_XYZ 为非阻塞(发完命令即返回), 靠 osDelay 等电机走完。
-  *
-  * [联调阶段配置] 验证 K230 识别 + XYZ 电机行程:
-  *   - 升降(Z): 只执行第 1 步上升 35cm, 其余升降置 0(原参数注释保留在原处)
-  *   - 爪子舵机: runActionGroup 全部注释, 改 USART1 文字打印占位
-  *   - 分拣投料: 只打印"豆子->几号箱"决策结果, 不真正投料
-  *   恢复真实动作时取消对应注释即可, 参数一个没丢。
-  *
   * 日志一律用英文: UTF-8 中文字符串在 ARMCC V5.06 下会乱码/报错。
   ******************************************************************************
   */
@@ -31,7 +35,7 @@
 #include "task.h"
 #include "cmsis_os.h"
 #include "motor.h"       /* Motor_XYZ */
-#include "servo.h"       /* runActionGroup - 联调阶段调用已注释, 恢复时需要 */
+#include "servo.h"       /* runActionGroup */
 #include "K230.h"        /* k230_write, K230 命令码, bean_color, Data_yinshe,
                           * k230_wait_ready / k230_phase1_bean /
                           * k230_phase2_front / k230_phase3_side */
@@ -44,13 +48,15 @@
 #define ACTION_STARTUP_DELAY     1000               /* 等电机使能+M2006反馈稳定(ms) */
 
 /* ---- 内部函数 ---- */
-static void action_test(void *argument);
 static void action_all(void *argument);
-static void action_douzi_first(void);
-static void action_douzi_secend(void);
+static void action_grab_left(void);
+static void action_grab_middle(void);
+static void action_grab_right(void);
 static void action_gouto_xiangzi_first(void);
 static void action_gouto_xiangzi_secend(void);
-void goto_box(uint8_t target_box, uint8_t claw);
+void goto_box(uint8_t target_box);
+void move_box(uint8_t target_box);
+void goto_box_ready(uint8_t target_box);
 
 /* ===== 动作注释 ===== */
 /**
@@ -83,63 +89,14 @@ static void dbg(const char *s)
     printf("%s", s);
 }
 
-/**
-  * @brief  分拣决策: 依 bean_color 查 number_position 得箱位, 调 Action_1..5
-  * @note   Action_1..5 目前仍是 K230.c 里的弱定义空桩, 需按机械行程实现放箱
-  *         动作后才会真正投料; 在此之前本函数只输出决策结果供现场核对。
-  */
-static void place_beans(void)
-{
-    char buf[100];
-
-    bean_locked = 0;    /* 解锁, 允许下一轮豆子数据写入 */
-
-    /* 先把 K230 的识别结果原样打出来, 便于判断是识别错还是查表错 */
-    snprintf(buf, sizeof(buf), "[ACT] beans = %02X %02X %02X\r\n",
-             bean_color[0], bean_color[1], bean_color[2]);
-    dbg(buf);
-    snprintf(buf, sizeof(buf), "[ACT] boxes(1..5) = %02X %02X %02X %02X %02X\r\n",
-             number_position[0], number_position[1], number_position[2],
-             number_position[3], number_position[4]);
-    dbg(buf);
-
-    /* Data_yinshe 返回命中的箱子位置(1~5), 负值=失败必须报出来:
-     *   -1 = 豆子颜色非法(K230 发来的不是 0x06/07/08)
-     *   -2 = 该数字不在 number_position 里(识别错或第5位推理失败)
-     * 忽略返回值的话, 这两种情况下豆子会被静默丢弃, 现场完全看不出发生了什么。
-     * 注: Data_yinshe 内部调的 Action_1..5 仍是 K230.c 里的 __weak 空桩,
-     * 所以只做决策不投料, 与本阶段"抓放用文字代替"一致。 */
-    dbg("[ACT] >>> Place beans (TEXT ONLY, no real drop) <<<\r\n");
-    for (int b = 0; b < 3; b++)
-    {
-        uint8_t c = bean_color[b];
-        const char *cname = (c == BEAN_GREEN)  ? "GREEN"  :
-                            (c == BEAN_YUN)    ? "YUN"    :
-                            (c == BEAN_YELLOW) ? "YELLOW" : "INVALID";
-        int pos = Data_yinshe(c);
-
-        if (pos > 0)
-            snprintf(buf, sizeof(buf),
-                     "[SIM] bean%d %s(%02X) -> box %d : drop here\r\n",
-                     b + 1, cname, c, pos);
-        else if (pos == -1)
-            snprintf(buf, sizeof(buf),
-                     "[SIM] bean%d %s(%02X) -> SKIPPED: bad color\r\n",
-                     b + 1, cname, c);
-        else
-            snprintf(buf, sizeof(buf),
-                     "[SIM] bean%d %s(%02X) -> SKIPPED: not in boxes\r\n",
-                     b + 1, cname, c);
-        dbg(buf);
-    }
-    dbg("[ACT] Done\r\n");
-}
-
 /* ==================== 主流程 ==================== */
 /*
-分两次抓，先抓左边和中间豆子，然后去放豆子，然后再抓右边的豆子，最后去放豆子
-
-*/
+ * 单爪结构: 分3次抓豆(左->中->右), 每次抓完去箱子放豆。
+ * 只有第1次抓豆前识别豆子(Phase1), 第1次放箱时识别箱子(Phase2/Phase3)。
+ *
+ * 豆子X轴坐标(以初始点为原点, 靠墙dir=1为正):
+ *   左豆 +35, 中豆 +14.5, 右豆 -57.5
+ */
 
 /* ===== 箱子间X轴移动 (以第4个箱子为原点) ===== */
 /* 以第4个箱子为坐标原点(0), 左为负, 右为正, 单位cm。
@@ -157,73 +114,34 @@ static void action_all(void *argument)
     /* 等 K230 就绪(模型加载完成, 0x0B 心跳): 必须在 phase1 之前,
      * 否则命令会在 K230 还没启动接收时就被发出, K230 漏掉命令后
      * 全阶段 no ack。超时(30s)也放行--K230 可能已就绪只是漏了就绪帧。 */
+    osDelay(1000);
     (void)k230_wait_ready();
 
-    osDelay(ACTION_STARTUP_DELAY); /* 等电机使能 + M2006 反馈稳定 */
-
-    /* Phase1 必须在抓豆之前: 抓完再识别就来不及决定放哪个箱 */
+    /* Phase1 必须在第1次抓豆之前: 抓完再识别就来不及决定放哪个箱 */
     (void)k230_phase1_bean();
 
-    action_douzi_first(); /* 抓豆子, 动作截止到抓完豆子已完成升降结构移到右边 */
+    /* ===== 第一次: 抓左边豆子 -> 放箱(含识别箱子) ===== */
+    action_grab_left();                        /* 抓左边豆子, 结束后走到右边豆子位置 */
+    action_gouto_xiangzi_first();              /* 放箱子, 内含 Phase2(正面) + Phase3(侧面) */
+    goto_box(Data_yinshe(bean_color[0]));      /* 走到左边豆子映射箱子位置, 黑爪放 */
+    goto_box_ready(4);                         /* 回到第4个箱子(中转) */
 
-    action_gouto_xiangzi_first(); /* 放箱子, 内含 Phase2(正面数字) + Phase3(侧面数字) */
+    /* ===== 第二次: 抓中间豆子 -> 放箱(无识别) ===== */
+    action_grab_middle();                      /* 抓中间豆子, 结束后走到右边豆子位置 */
+    action_gouto_xiangzi_secend();             /* 放箱子(无视觉) */
+    goto_box(Data_yinshe(bean_color[1]));      /* 走到中间豆子映射箱子位置, 黑爪放 */
+    goto_box_ready(4);                         /* 回到第4个箱子(中转) */
 
-    // place_beans(); /* 分拣决策: 颜色 -> 箱位 */
+    /* ===== 第三次: 抓右边豆子 -> 放箱(无识别) ===== */
+    action_grab_right();                       /* 抓右边豆子, 结束后动作组12过渡 */
+    action_gouto_xiangzi_secend();             /* 放箱子(无视觉) */
+    goto_box(Data_yinshe(bean_color[2]));      /* 走到右边豆子映射箱子位置, 黑爪放 */
 
-    goto_box(Data_yinshe(bean_color[0]), CLAW_WHITE);//走到左边豆子映射箱子位置, 白爪放
-    goto_box(Data_yinshe(bean_color[1]), CLAW_BLACK);//走到中间豆子映射箱子位置, 黑爪放
-
-    if (s_current_box != 4)
+    for (;;)
     {
-        /* 回到第4个箱子(中转), 只移动不放料 */
-        goto_box(4, CLAW_WHITE);
-        // 这里缺少一个关于爪子朝向的舵机动作组
+        osDelay(1000);
     }
-
-    // 第二次抓豆子（右边豆子）
-    action_douzi_secend();
-
-    // 第二次放豆子（右边豆子）
-    action_gouto_xiangzi_secend();
-    goto_box(Data_yinshe(bean_color[2]), CLAW_BLACK); // 走到右边豆子映射箱子位置, 黑爪放
 }
-
-    /**
-     * @brief  上电自动动作任务: 视觉识别 + 抓豆子 + 放箱子, 完成后挂起
-     * @note   视觉任一阶段失败时不中止动作序列 -- 电机行程本身不依赖识别结果,
-     *         只有最后的 place_beans 分拣决策依赖, 失败会在日志里明确报出来。
-     *         这样现场至少能看到机构走完, 而不是停在原地无从判断。
-     */
-    static void action_test(void *argument)
-    {
-        (void)argument;
-
-        (void)k230_wait_ready();
-
-        osDelay(ACTION_STARTUP_DELAY); /* 等电机使能 + M2006 反馈稳定 */
-
-        dbg("\r\n=== K230 Competition (Master) ===\r\n");
-
-        /* Phase1 必须在抓豆之前: 抓完再识别就来不及决定放哪个箱 */
-        (void)k230_phase1_bean();
-
-        action_douzi_first(); /* 抓豆子, 动作截止到抓完豆子已完成升降结构移到右边 */
-
-        action_gouto_xiangzi_first(); /* 放箱子, 内含 Phase2(正面数字) + Phase3(侧面数字) */
-
-        place_beans(); /* 分拣决策: 颜色 -> 箱位 */
-
-        dbg("=== All phases complete ===\r\n");
-
-        //复位准备去抓右边的豆子（第二次抓）
-        for (;;)
-        {
-            osDelay(1000);
-        }
-
-
-
-    }
 
     /* ===== 动作注释 ===== */
     /**
@@ -233,146 +151,228 @@ static void action_all(void *argument)
      *
      */
 
-    /* ===== 分界线前: 抓豆子 ===== */
-    /**
-     * @brief  抓豆子动作序列
-     *         起始点 -> 抓左边豆子 -> 抓中间豆子 -> 准备去放箱子
-     */
-    static void action_douzi_first(void)
-    {
-        dbg("[ACT] === grab beans ===\r\n");
+    /* ===== 抓豆子 ===== */
 
-        /* 起始点到抓左边豆子: X+44 Y+185 Z+35(上升) */
-        dbg("[ACT] 1/7 move to left bean (X+44 Y+185 Z+35)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 44.0f,  /* X: dir=1(右), 300rpm, acc=30, 44cm */
-                        1, 100, 20, 185.0f, /* Y: dir=1(前), 100rpm, acc=20, 185cm */
+    /**
+     * @brief  第一次抓豆: 抓左边豆子 (X=+35, 靠墙方向)
+     *         起始点(X=0) -> X+35 Y+188 Z+35 -> 组15(准备) -> Z降 -> 组16(抓) -> Z升
+     *         -> X-92.5(走到右豆位置: +35到-57.5=92.5cm) -> 组12(过渡去放箱子)
+     */
+    static void action_grab_left(void)
+    {
+        dbg("[ACT] === grab left bean ===\r\n");
+
+        /* 起始点到抓左边豆子: X+35(靠墙) Y+188 Z+35(上升) */
+        dbg("[ACT] 1/6 move to left bean (X+35 Y+188 Z+35)\r\n");
+        (void)Motor_XYZ(1, 800, 50,35.0f,  /* X: dir=1(靠墙/右), 35cm -> 左豆位置 */
+                        1, 50, 20, 190.0f,  /* Y: dir=1(前), 190cm */
                         0, 35.0f);          /* Z: dir=0(上), 35cm */
 
-        runActionGroup(1, 1); // 舵机初始化
+        runActionGroup(15, 1);              /* 黑爪准备抓左边豆子 */
         osDelay(6000);
 
-        // 降爪子去抓左边豆子: Z 下降 30cm
-        dbg("[ACT] 2/7 claw down (Z-30)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 0, /* X: 不动 */
-                        1, 100, 20, 0, /* Y: 不动 */
-                        1, 30.0f);     /* Z: dir=1(下), 30cm */
-        osDelay(2500);
-
-        runActionGroup(2, 1); // 白爪抓
+        /* 降爪子去抓左边豆子: Z 下降 30cm */
+        dbg("[ACT] 2/6 claw down (Z-30)\r\n");
+        (void)Motor_XYZ(1, 800, 50,0, /* X: 不动 */
+                        1, 50, 20, 0, /* Y: 不动 */
+                        1, 25.0f);     /* Z: dir=1(下), 25cm */
         osDelay(3000);
 
-        // 升爪子复位: Z 上升 30cm
-        dbg("[ACT] 3/7 claw up (Z+30)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 0, /* X: 不动 */
-                        1, 100, 20, 0, /* Y: 不动 */
-                        0, 30.0f);     /* Z: dir=0(上), 30cm */
+        runActionGroup(16, 1); /* 黑爪抓 */
+        osDelay(3000);
+
+        /* 升爪子复位: Z 上升 30cm */
+        dbg("[ACT] 3/6 claw up (Z+30)\r\n");
+        (void)Motor_XYZ(1, 800, 50,0, /* X: 不动 */
+                        1, 50, 20, 0, /* Y: 不动 */
+                        0, 25.0f);     /* Z: dir=0(上), 25cm */
         osDelay(2500);
 
-        /* 抓中间豆子: X-20.5 */
-        dbg("[ACT] 4/7 move to middle bean (X-20.5)\r\n");
-        (void)Motor_XYZ(0, 400, 50, 20.5f, /* X: dir=0(左), 300rpm, acc=20, 20.5cm */
-                        1, 100, 20, 0,     /* Y: 不动 */
+
+        /* 走到右边豆子位置: X-92.5(远离墙)
+         * 左豆X=+35, 右豆X=-57.5, 距离=92.5cm */
+        dbg("[ACT] 5/6 move to right bean (X-92.5)\r\n");
+        (void)Motor_XYZ(0, 800, 50,92.5f, /* X: dir=0(远离墙/左), 92.5cm -> 右豆位置 */
+                        1, 50, 20, 0,     /* Y: 不动 */
                         0, 0.0f);          /* Z: 不动 */
+        osDelay(3000);
+
+        /* 动作组12: 过渡, 去放箱子 */
+        dbg("[ACT] 4/6 action group 12 (toward right bean)\r\n");
+        runActionGroup(12, 1);
+
+        osDelay(6000);
+
+        dbg("[ACT] === grab left bean done ===\r\n");
+    }
+
+    /**
+     * @brief  第二次抓豆: 抓中间豆子 (X=+14.5)
+     *         流程与 action_grab_right 一致: 先从箱子去右豆位置, 再根据X坐标去抓中豆。
+     *         从4号箱 -> Y+120 -> X-82 Y+195(到右豆) -> X+24(到中豆) -> 组3(准备)
+     *         -> Z降 -> 组4(抓) -> Z升 -> 组12(过渡) -> X-24(回右豆位置)
+     *
+     * 右豆X=-57.5, 中豆X=+14.5, 距离=24cm
+     * (从4号箱回豆区: Y+120, 然后X-82 Y+195 到右豆位置, 再X+24 到中豆位置)
+     */
+    static void action_grab_middle(void)
+    {
+        dbg("[ACT] === grab middle bean ===\r\n");
+
+        /* 从4号箱子回到豆子区域: Y+120 (与 action_grab_right 相同) */
+        dbg("[ACT] 1/8 return to bean area (Y+120)\r\n");
+        (void)Motor_XYZ(0, 800, 50, 0.0f,    /* X: 不动 */
+                        1, 50, 20, 110.0f,    /* Y: dir=1(前), 110cm */
+                        0, 0.0f);             /* Z: 不动 */
+        osDelay(6000);
+
+        /* 到右边豆子位置: X-82 Y+195 (与 action_grab_right 相同)
+         * 右豆X=-57.5, 4号箱X≈+24.5, 需远离墙走82cm */
+        dbg("[ACT] 2/8 move to right bean (X-82 Y+195)\r\n");
+        (void)Motor_XYZ(0, 800, 50, 82.0f,   /* X: dir=0(远离墙/左), 82cm -> 右豆位置 */
+                        1, 50, 20, 207.0f,    /* Y: dir=1(前), 207cm */
+                        0, 0.0f);             /* Z: 不动 */
+        osDelay(8000);
+
+        /* 从右豆去中间豆子位置: X+24(靠近墙)
+         * 右豆X=-57.5, 中豆X=+14.5, 距离=24cm */
+        dbg("[ACT] 3/8 move to middle bean (X+24)\r\n");
+        (void)Motor_XYZ(1, 800, 50,24.0f,   /* X: dir=1(靠墙/右), 24cm -> 中豆位置 */
+                        1, 50, 20, 0,         /* Y: 不动 */
+                        0, 0.0f);             /* Z: 不动 */
+
+        osDelay(3000);
+        /* 准备抓中间豆子 */
+
+        runActionGroup(3, 1); /* 转轴去抓中间豆子 */
+        osDelay(2000);
+
+        /* 降爪子去抓中间豆子: Z 下降 20cm */
+        dbg("[ACT] 4/8 claw down (Z-20)\r\n");
+        (void)Motor_XYZ(1, 800, 50,0, /* X: 不动 */
+                        1, 50, 20, 0, /* Y: 不动 */
+                        1, 15.0f);     /* Z: dir=1(下), 15cm */
+        osDelay(2500);
+
+        runActionGroup(4, 1); /* 黑爪抓中间豆子 */
+        osDelay(3000);
+
+        /* 升爪子复位: Z 上升 20cm */
+        dbg("[ACT] 5/8 claw up (Z+20)\r\n");
+        (void)Motor_XYZ(1, 800, 50,0, /* X: 不动 */
+                        1, 50, 20, 0, /* Y: 不动 */
+                        0, 15.0f);     /* Z: dir=0(上), 15cm */
+        osDelay(2500);
+
+        /* 动作组12: 过渡, 去右边豆子方向 */
+        dbg("[ACT] 6/8 action group 12 (toward right bean)\r\n");
+        runActionGroup(12, 1);
+        osDelay(3000);
+
+        /* 走到右边豆子位置: X-24(远离墙)
+         * 中豆X=+14.5, 右豆X=-57.5, 距离=24cm */
+        dbg("[ACT] 7/8 move to right bean (X-24)\r\n");
+        (void)Motor_XYZ(0, 800, 50,24.0f, /* X: dir=0(远离墙/左), 24cm -> 右豆位置 */
+                        1, 50, 20, 0,     /* Y: 不动 */
+                        0, 0.0f);          /* Z: 不动 */
+        osDelay(3000);
+
+        dbg("[ACT] === grab middle bean done ===\r\n");
+    }
+
+    /**
+     * @brief  第三次抓豆: 抓右边豆子 (X=-57.5)
+     *         从4号箱子回去 -> 到右边豆子位置 -> 组15(准备) -> Z降 -> 组16(抓) -> Z升
+     *         -> 组12(过渡去放箱子)
+     *         抓完后已在右豆位置, 无需额外X移动, 直接去放箱子。
+     *
+     * 右豆X=-57.5, 4号箱X≈+24.5, 差=-82 -> dir=0(远离墙) 82cm
+     */
+    static void action_grab_right(void)
+    {
+        dbg("[ACT] === grab right bean ===\r\n");
+
+        /* 从4号箱子回到豆子区域: Y+120 */
+        dbg("[ACT] 1/7 return to bean area (Y+120)\r\n");
+        (void)Motor_XYZ(0, 800, 50, 0.0f,    /* X: 不动 */
+                        1, 50, 20, 110.0f,    /* Y: dir=1(前), 110cm */
+                        0, 0.0f);             /* Z: 不动 */
+        osDelay(6000);
+
+        /* 到右边豆子位置: X-82 Y+195
+         * 右豆X=-57.5, 4号箱X≈+24.5, 需远离墙走82cm */
+        dbg("[ACT] 2/7 move to right bean (X-82 Y+195)\r\n");
+        (void)Motor_XYZ(0, 800, 50, 82.0f,   /* X: dir=0(远离墙/左), 82cm -> 右豆位置 */
+                        1, 50, 20, 207.0f,    /* Y: dir=1(前), 207cm */
+                        0, 0.0f);             /* Z: 不动 */
+
+        /* 准备黑爪抓右边豆子 */
+        runActionGroup(15, 1); /* 黑爪准备抓右边豆子 */
+        osDelay(9000);
+
+
+
+        /* 降爪子去抓右边豆子: Z 下降 25cm */
+        dbg("[ACT] 3/7 claw down (Z-25)\r\n");
+        (void)Motor_XYZ(0, 800, 50, 0,  /* X: 不动 */
+                        1, 50, 20, 0,  /* Y: 不动 */
+                        1, 20.0f);      /* Z: dir=1(下), 20cm */
         osDelay(4000);
 
-        runActionGroup(3, 1); // 转轴去抓中间豆子
-        osDelay(2000);
+        runActionGroup(16, 1); /* 黑爪抓 */
+        osDelay(8000);
 
-        // 降爪子去抓中间豆子: Z 下降 20cm
-        dbg("[ACT] 5/7 claw down (Z-20)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 0, /* X: 不动 */
-                        1, 100, 20, 0, /* Y: 不动 */
-                        1, 20.0f);     /* Z: dir=1(下), 20cm */
-        osDelay(2500);
-
-        runActionGroup(4, 1); // 黑爪抓
-        osDelay(2000);
-
-        // 升爪子复位: Z 上升 20cm
-        dbg("[ACT] 6/7 claw up (Z+20)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 0, /* X: 不动 */
-                        1, 100, 20, 0, /* Y: 不动 */
+        /* 升爪子复位: Z 上升 25cm */
+        dbg("[ACT] 4/7 claw up (Z+25)\r\n");
+        (void)Motor_XYZ(1, 800, 50, 0, /* X: 不动 */
+                        1, 50, 20, 0, /* Y: 不动 */
                         0, 20.0f);     /* Z: dir=0(上), 20cm */
-        osDelay(2500);
+        osDelay(4000);
 
-        runActionGroup(5, 1); // 转轴，进去放箱子准备阶段
-        osDelay(2000);
 
-        /* 准备去放箱子: X-60 */
-        dbg("[ACT] 7/7 move toward box (X-60)\r\n");
-        (void)Motor_XYZ(0, 400, 50, 72.0f, /* X: dir=0(左), 300rpm, acc=20, 72cm */
-                        1, 100, 20, 0,     /* Y: 不动 */
-                        0, 0.0f);          /* Z: 不动 */
-        osDelay(9000);
-        dbg("[ACT] === grab beans done ===\r\n");
-    }
-
-    //第二次抓豆子动作序列
-    static void action_douzi_secend(void)
-    {
-        //从箱子回去第二次抓豆子
-        (void)Motor_XYZ(0, 400, 50, 77.0f, /* X: dir=0(左), 300rpm, acc=20, 77cm *///65
-
-                        1, 100, 20, 315.0f,     /* Y: 不动 */
-                        0, 0.0f);          /* Z: 不动 */
-        osDelay(15000);
-
-        // 降爪子去抓中间豆子: Z 下降 25cm
-        (void)Motor_XYZ(0, 400, 50, 0,  /* X: dir=0(左), 300rpm, acc=20, 65cm */
-                        1, 100, 20, 0, /* Y: 不动 */
-                        0, 25.0f);           /* Z: 不动 */
-        osDelay(3000);
-
-        //补一个舵机动作组去抓豆子
-
-        // 升爪子复位: Z 上升 25cm
-        (void)Motor_XYZ(1, 400, 50, 0, /* X: 不动 */
-                        1, 100, 20, 0, /* Y: 不动 */
-                        0, 25.0f);     /* Z: dir=0(上), 25cm */
-        osDelay(3000);
-
+        dbg("[ACT] === grab right bean done ===\r\n");
     }
 
 
-
-        /* ===== 分界线后: 放箱子(含障碍物避让) ===== */
-        /**
-         * @brief  放箱子动作序列
-         *         障碍物动作1 -> 障碍物动作2 -> Phase2(正面数字)
-         *         -> 到箱子 -> Phase3(侧面数字)
-         * @note   Phase2/Phase3 的位置对应 K230 状态机顺序, 不可对调。
-         */
-        static void action_gouto_xiangzi_first(void)
+    /* ===== 分界线后: 放箱子(含障碍物避让) ===== */
+    /**
+     * @brief  第1次放箱子动作序列(含 Phase2/Phase3 视觉识别)
+     *         障碍物动作1 -> 障碍物动作2 -> Phase2(正面数字)
+     *         -> 到箱子 -> Phase3(侧面数字)
+     * @note   Phase2/Phase3 的位置对应 K230 状态机顺序, 不可对调。
+     *         仅第1次放箱调用此函数, 后续放箱用 action_gouto_xiangzi_secend。
+     */
+    static void action_gouto_xiangzi_first(void)
     {
-        dbg("[ACT] === place to box ===\r\n");
+        dbg("[ACT] === place to box (with vision) ===\r\n");
 
-        /* 豆子到箱子障碍物动作一 */
-        dbg("[ACT] obstacle step1 (Y-100)\r\n");
-        (void)Motor_XYZ(0, 400, 50, 0,      /* X: 不动 */
-                        0, 100, 20, 100.0f, /* Y: dir=0(后), 100rpm, acc=20, 100cm */
-                        0, 0.0f);           /* Z: 不动 */
-        osDelay(6000);
+        (void)Motor_XYZ(0, 800, 50, 0,     /* X: 不动 */
+                        0, 50, 20, 102.0f, /* Y: dir=0(后), 50rpm, acc=20, 102cm */
+                        0, 0.0f);          /* Z: 不动 */
+        osDelay(5000);
 
         /* 豆子到箱子障碍物动作2 */
-        dbg("[ACT] obstacle step2 (X+65 Y-160)\r\n");
-        (void)Motor_XYZ(1, 600, 100, 77.0f, /* X: dir=1(右), 600rpm, acc=20, 77cm */
-                        0, 50, 20, 160.0f, /* Y: dir=0(后), 50rpm, acc=20, 160cm */
-                        0, 0.0f);          /* Z: 不动 */
-      
+        (void)Motor_XYZ(1, 800, 100, 82.0f, /* X: dir=1(右), 600rpm, acc=20, 82cm */
+                        0, 50, 20, 158.0f,  /* Y: dir=0(后), 50rpm, acc=20, 158cm */
+                        0, 0.0f);           /* Z: 不动 */
 
-        osDelay(15000);
+        osDelay(8000);
         (void)k230_phase2_front(); /* 看正面数字 */
 
         /* 箱子障碍物到箱子 */
-        dbg("[ACT] move to box (Y-55)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 0,     /* X: 不动 */
-                        0, 100, 20, 55.0f, /* Y: dir=0(后), 100rpm, acc=20, 55cm */
-                        0, 0.0f);          /* Z: 不动 */
-        osDelay(8000);                     // 这里到达了第4个箱子位置
+        (void)Motor_XYZ(1, 800, 50, 0,    /* X: 不动 */
+                        0, 50, 20, 52.0f, /* Y: dir=0(后), 50rpm, acc=20, 52cm */
+                        0, 0.0f);         /* Z: 不动 */
+        osDelay(3000);                    // 这里到达了第4个箱子位置
 
         (void)k230_phase3_side(); /* 看侧面数字 + 推理第5位 */
+        osDelay(1000);
 
-        dbg("[ACT] === place to box done ===\r\n");
+        (void)Motor_XYZ(1, 800, 50, 0,   /* X: 不动 */
+                        0, 50, 20, 8.5f, /* Y: dir=0(后), 50rpm, acc=20, 8.5cm */
+                        0, 0.0f);        /* Z: 不动 */
+        osDelay(1500);                   // 这里到达了第4个箱子位置
+        dbg("[ACT] === place to box (with vision) done ===\r\n");
     }
 
     /* ===== 放箱子(不含视觉识别) ===== */
@@ -381,74 +381,126 @@ static void action_all(void *argument)
       *         障碍物动作1 -> 障碍物动作2 -> 到箱子
       *         与 action_gouto_xiangzi_first 相同的电机动作, 但不调 K230 视觉。
       *         用于已经识别完数字、只需机械移动到箱子的场景。
+      *         动作组12(准备黑爪放箱子)已移至各抓豆函数末尾, 此函数不含舵机动作。
       */
 
-      //第二次从豆子去放箱子
+      //从豆子去放箱子(无视觉)
     static void action_gouto_xiangzi_secend(void)
     {
         dbg("[ACT] === place to box (no vision) ===\r\n");
 
         /* 豆子到箱子障碍物动作一 */
         dbg("[ACT] obstacle step1 (Y-100)\r\n");
-        (void)Motor_XYZ(0, 400, 50, 0,      /* X: 不动 */
-                        0, 100, 20, 100.0f, /* Y: dir=0(后), 100rpm, acc=20, 100cm */
+        (void)Motor_XYZ(0, 800, 50, 0,      /* X: 不动 */
+                        0, 50, 20, 100.0f, /* Y: dir=0(后), 50rpm, acc=20, 100cm */
                         0, 0.0f);           /* Z: 不动 */
         osDelay(6000);
 
         /* 豆子到箱子障碍物动作2 */
-        dbg("[ACT] obstacle step2 (X+65 Y-160)\r\n");
-        (void)Motor_XYZ(1, 400, 50, 65.0f, /* X: dir=1(右), 300rpm, acc=20, 65cm */
-                        0, 50, 20, 215.0f, /* Y: dir=0(后), 50rpm, acc=20, 215cm */
+        dbg("[ACT] obstacle step2 (X+82 Y-215)\r\n");
+        (void)Motor_XYZ(1, 800, 50, 82.0f, /* X: dir=1(右), 300rpm, acc=20, 82cm */
+                        0, 50, 20, 217.0f, /* Y: dir=0(后), 50rpm, acc=20, 217cm */
                         0, 0.0f);          /* Z: 不动 */
-        osDelay(6000);
+                                    
+
+        osDelay(2000);
+                        /* 动作组12: 过渡, 去放箱子 */
+        dbg("[ACT] 5/7 action group 12 (toward box)\r\n");
+        runActionGroup(12, 1);
+
+        osDelay(7500);
 
         dbg("[ACT] === place to box (no vision) done ===\r\n");
     }
 
     /**
-     * @brief  从当前箱子直线移动X轴到目标箱子 (Y/Z不动), 到达后执行放料舵机动作组
-     *         直接用坐标差算位移: delta = 目标坐标 - 当前坐标,
-     *         delta>0 向右(dir=1), delta<0 向左(dir=0), 一步到位不经中转。
+     * @brief  放料流程(单爪-黑爪): 先到3号箱子做定位, 再去目标箱子放料
+     *         流程: 移动到3号箱子 -> 准备动作组(定位爪子朝向)
+     *               -> 移动到目标箱子 -> Z下降 -> 开爪放豆子 -> Z上升复位
      * @param  target_box  目标箱子位置 1~5
-     * @param  claw        使用哪个爪子: CLAW_WHITE(0)=白爪, CLAW_BLACK(1)=黑爪
      *
-     * 舵机动作组选择 (按箱子位置 + 爪子):
-     *   黑爪: 箱子1->组8  箱子2-4->组5  箱子5->组6
-     *   白爪: 箱子1->组6  箱子2-4->组7  箱子5->组8
+     * 准备动作组 (按箱子位置, 仅黑爪):
+     *   箱子1->组7  箱子2-4->组12  箱子5->组9
+     * 开爪放豆子动作组:
+     *   黑爪->组18
      */
-    void goto_box(uint8_t target_box, uint8_t claw)
+    void goto_box(uint8_t target_box)
     {
         if (target_box < 1 || target_box > 5)
             return;
 
-        /* 已在目标箱子位置则只放料, 不重复移动 */
-        if (target_box != s_current_box)
-        {
-            float delta = box_x_coord[target_box] - box_x_coord[s_current_box];
-            uint8_t dir = (delta > 0.0f) ? 1 : 0; /* >0 向右, <0 向左 */
-            float dist = (delta > 0.0f) ? delta : -delta;
+        /* 1. 先到第3号箱子(中转), 在那里做定位动作组 */
+        move_box(3);
 
-            (void)Motor_XYZ(dir, 400, 50, dist,
-                            1, 100, 20, 0, /* Y: 不动 */
-                            0, 0.0f);      /* Z: 不动 */
-            osDelay(3000);
-            s_current_box = target_box;
-        }
-
-        /* 根据爪子和箱子位置选择放料舵机动作组 */
-        uint8_t action_group;
-        if (claw == CLAW_BLACK)
-        {
-            if      (target_box == 1) action_group = 8;  /* 黑爪抓箱子1 */
-            else if (target_box == 5) action_group = 6;  /* 黑爪抓箱子5 */
-            else                      action_group = 5;  /* 黑爪抓中间箱子(2-4) */
-        }
-        else /* CLAW_WHITE */
-        {
-            if      (target_box == 1) action_group = 6;  /* 白爪抓箱子1 */
-            else if (target_box == 5) action_group = 8;  /* 白爪抓箱子5 */
-            else                      action_group = 7;  /* 白爪抓中间箱子(2-4) */
-        }
-        runActionGroup(action_group, 1);
+        /* 2. 准备放箱子: 根据箱子位置选择定位动作组(仅黑爪) */
+        uint8_t prep_group;
+        if      (target_box == 1) prep_group = 7;   /* 黑爪准备放箱子1 */
+        else if (target_box == 5) prep_group = 9;   /* 黑爪准备放箱子5 */
+        else                      prep_group = 12;  /* 黑爪准备放中间箱子(2-4) */
+        runActionGroup(prep_group, 1);
         osDelay(3000);
+
+        /* 3. 再去目标箱子 */
+        move_box(target_box);
+
+        /* 4. Z轴下降25cm (X/Y不动) */
+        (void)Motor_XYZ(1, 800, 50,0, /* X: 不动 */
+                        1, 50, 20, 0,  /* Y: 不动 */
+                        1, 22.0f);     /* Z: dir=1(下), 25cm */
+        osDelay(4000);
+
+        /* 5. 开爪放豆子 (黑爪->组18) */
+        runActionGroup(18, 1);
+        osDelay(5000);
+
+        /* 6. Z轴上升25cm复位 */
+        (void)Motor_XYZ(1, 800, 50,0, /* X: 不动 */
+                        1, 50, 20, 0, /* Y: 不动 */
+                        0, 22.0f);     /* Z: dir=0(上), 25cm */
+        osDelay(4000);
+    }
+
+    /**
+     * @brief  从当前箱子移动到目标箱子, 只做定位(不做放料)
+     *         流程: X移动到3号箱子(中转) -> 组15(准备) -> X移动到目标箱子
+     * @param  target_box  目标箱子位置 1~5
+     */
+    void goto_box_ready(uint8_t target_box)
+    {
+        if (target_box < 1 || target_box > 5)
+            return;
+
+        /* 1. 先到第3号箱子(中转) */
+        move_box(3);
+
+        /* 2. 组15(准备) */
+        runActionGroup(15, 1);
+        osDelay(3000);
+
+        /* 3. 再去目标箱子 */
+        move_box(target_box);
+    }
+
+    /**
+     * @brief  只移动X轴到目标箱子位置 (Y/Z不动, 不执行放料)
+     *         与 goto_box 共用 box_x_coord / s_current_box 位置跟踪。
+     * @param  target_box  目标箱子位置 1~5
+     */
+    void move_box(uint8_t target_box)
+    {
+        if (target_box < 1 || target_box > 5)
+            return;
+        if (target_box == s_current_box)
+            return;
+
+        float delta = box_x_coord[target_box] - box_x_coord[s_current_box];
+        uint8_t dir = (delta > 0.0f) ? 1 : 0; /* >0 向右, <0 向左 */
+        float dist = (delta > 0.0f) ? delta : -delta;
+
+        (void)Motor_XYZ(dir, 800, 50,dist,
+                        1, 50, 20, 0, /* Y: 不动 */
+                        0, 0.0f);      /* Z: 不动 */
+
+        osDelay(6000);
+        s_current_box = target_box;
     }
