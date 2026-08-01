@@ -16,8 +16,8 @@
   *   k230_write(K230_CMD_LOOK_BEAN)   -> K230 看豆 -> bean_color[3] 填充, bean_flag=1
   *   k230_write(K230_CMD_LOOK_NUMBER) -> K230 看正面数字 (K230端保存, 不回传)
   *   k230_write(K230_CMD_LOOK_SIDE)   -> K230 看侧面数字 -> number_position[5] 填充
-  *   Data_Handle1(颜色) -> 查 number_position 得位置 1~5 -> 调 Action_1..5
-  *   Data_Handle1_1(颜色) -> 同上 -> 调 Action_6..10
+  *   Data_yinshe(颜色) -> 查 number_position 得位置 1~5 -> 调 Action_1..5
+  *   Data_yinshe_1(颜色) -> 同上 -> 调 Action_6..10
   ******************************************************************************
   */
 #ifndef __K230_H
@@ -96,8 +96,8 @@ extern __IO uint32_t k230_rx_badphase;   /* 阶段号不符被丢弃的帧数(�
 extern __IO uint32_t k230_last_rx_tick;  /* 最近一次收到合法帧的 tick, 存活检测用 */
 
 /* ---- K230 触发的动作组 (在 action.c 中实现, 此处仅声明) ----
- * Data_Handle1 根据 key(豆子颜色) 查 number_position 得位置 1~5, 调 Action_1..5
- * Data_Handle1_1 同上, 调 Action_6..10
+ * Data_yinshe 根据 key(豆子颜色) 查 number_position 得位置 1~5, 调 Action_1..5
+ * Data_yinshe_1 同上, 调 Action_6..10
  * K230.c 提供弱定义空桩, 用户在 action.c 中以同名强定义覆写即可 */
 extern void Action_1(void);
 extern void Action_2(void);
@@ -139,7 +139,7 @@ int k230_write(uint8_t command);
   * @retval >0 命中的位置(1~5); -1=未知颜色; -2=该数字不在 number_position 中
   *         (K230 识别错或第5位推理失败, 调用方须处理, 不可当成功)
   */
-int Data_Handle1(uint8_t key);
+int Data_yinshe(uint8_t key);
 
 /* ==================== K230 通讯协议层 (三阶段主机通讯) ==================== */
 /* 从 action.c 移植而来: 发命令->等ACK->等数据->回ACK 的三阶段封装,

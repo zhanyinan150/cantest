@@ -45,7 +45,7 @@
 /* MotorAutoTask 当前随 #if 0 一起停用(上电动作已改由 action.c 的 Action_Init
  * 接管), 但函数体保留(里面存着调好的动作序列参数, 恢复时直接用)。放在同一个
  * #if 0 里可避免 "declared but never referenced" 警告, 又不丢失这段参数。 */
-#if 0
+#if 1
 static void MotorAutoTask(void *argument);
 #endif
 
@@ -111,15 +111,15 @@ void App_Init(void)
   K230_Init();
 
   /* 上电自动动作任务:
-   * 当前启用 Action_Init(action.c: 视觉三阶段 + 抓豆放箱), MotorAutoTask 已注释停用。
+   * 当前启用 Action_Init(action.c: action_all 完整比赛流程), MotorAutoTask 已停用。
    * 两者都调 Motor_XYZ, 不可同时运行。
-   * 切回 MotorAutoTask 时: 取消下方注释, 注释掉 Action_Init 即可。
-   * 须在 K230_Init 之后: action_test 任务会调 k230_write, 依赖 USART3 已就绪。 */
+   * 切回 MotorAutoTask 时: 取消下方 #if 0 改 1, 注释掉 Action_Init 即可。
+   * 须在 K230_Init 之后: action_all 任务会调 k230_write, 依赖 USART3 已就绪。 */
   Action_Init();
 
-#if 0  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
-  const osThreadAttr_t motorAutoTask_attributes = {
-    .name = "MotorAutoTask",
+ #if 0  /* 启用 MotorAutoTask: 上电自动调 Motor_XYZ 让 X/Y/Z 错峰运动 */
+   const osThreadAttr_t motorAutoTask_attributes = {
+     .name = "MotorAutoTask",
     .stack_size = MOTOR_AUTO_TASK_STACK_SIZE * 4,
     .priority = (osPriority_t)MOTOR_AUTO_TASK_PRIORITY,
   };
@@ -152,7 +152,7 @@ void App_Init(void)
   */
 
 
-#if 0  /* 随上面的前向声明一起停用, 保留动作参数备查 */
+#if 1  /* 随上面的前向声明一起停用, 保留动作参数备查 */
 
 /* ===== 动作注释 ===== */
 /**
@@ -166,25 +166,94 @@ static void MotorAutoTask(void *argument)
 {
   (void)argument;
   osDelay(MOTOR_AUTO_STARTUP_DELAY);  /* 等电机使能 + M2006 反馈稳定 */
+  osDelay(1000);
 
-   osDelay(1000);
+  /* ===== 全流程 Y 轴位移提取 (只动 Y, X/Z 不动) ===== */
 
-  //  runActionGroup(1,1);
+  /* --- 第一次: 抓左边豆子 -> 放箱 --- */
+  /* 1. Y+190: 起始点到左豆区域 (action_grab_left) */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  1, 50, 20, 190.0f,    /* Y: dir=1(前), 190cm */
+                  0, 35.0f);             /* Z: 不动 */
+  osDelay(9000);
 
-    // 起始点到抓左边豆子test
-    (void)Motor_XYZ(0, 300, 30, 93.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
-                    1, 100, 20, 0,   /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                    0, 25.0f);         /* Z: dir=0(上), 25cm */
-      osDelay(12000);
-      
-      (void)Motor_XYZ(1, 300, 30, 93.0f, /* X: dir=0(左), 300rpm, acc=30, 25cm */
-                      1, 100, 20, 0,     /* Y: dir=1(前), 100rpm, acc=20, 50cm (双电机同步) */
-                      0, 0);         /* Z: dir=0(上), 25cm */
-      osDelay(12000);
+  /* 2. Y-102: 障碍物动作1 (action_gouto_xiangzi_first) */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 102.0f,    /* Y: dir=0(后), 102cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(5000);
 
-      for (;;)
-      {
-        osDelay(1000);
-      }
+  /* 3. Y-158: 障碍物动作2 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 158.0f,    /* Y: dir=0(后), 158cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(8000);
+
+  /* 4. Y-52: 到箱子 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 52.0f,     /* Y: dir=0(后), 52cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(3000);
+
+  /* 5. Y-8.5: 微调 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 8.5f,      /* Y: dir=0(后), 8.5cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(1500);
+
+  /* --- 第二次: 抓中间豆子 -> 放箱 --- */
+  /* 6. Y+120: 回豆子区域 (action_grab_middle) */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  1, 50, 20, 120.0f,    /* Y: dir=1(前), 120cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(6000);
+
+  /* 7. Y+195: 到右边豆子位置 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  1, 50, 20, 195.0f,    /* Y: dir=1(前), 195cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(8000);
+
+  /* 8. Y-100: 障碍物动作1 (action_gouto_xiangzi_secend) */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 100.0f,    /* Y: dir=0(后), 100cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(6000);
+
+  /* 9. Y-215: 障碍物动作2 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 215.0f,    /* Y: dir=0(后), 215cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(11500);
+
+  /* --- 第三次: 抓右边豆子 -> 放箱 --- */
+  /* 10. Y+120: 回豆子区域 (action_grab_right) */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  1, 50, 20, 120.0f,    /* Y: dir=1(前), 120cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(6000);
+
+  /* 11. Y+195: 到右边豆子位置 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  1, 50, 20, 195.0f,    /* Y: dir=1(前), 195cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(9000);
+
+  /* 12. Y-100: 障碍物动作1 (action_gouto_xiangzi_secend) */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 100.0f,    /* Y: dir=0(后), 100cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(6000);
+
+  /* 13. Y-215: 障碍物动作2 */
+  (void)Motor_XYZ(0, 800, 50, 0,       /* X: 不动 */
+                  0, 50, 20, 215.0f,    /* Y: dir=0(后), 215cm */
+                  0, 0.0f);             /* Z: 不动 */
+  osDelay(11500);
+
+  for (;;)
+  {
+    osDelay(1000);
+  }
 }
 #endif /* MotorAutoTask 停用 */
